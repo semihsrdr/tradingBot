@@ -1,0 +1,56 @@
+body {
+    background-color: #f0f2f5;
+}
+
+.card {
+    border: none;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.card-header {
+    background-color: #fff;
+    border-bottom: 1px solid #e9ecef;
+    font-weight: 600;
+}
+
+.log-container {
+    height: 400px;
+    background-color: #1a1a1a;
+    color: #f0f0f0;
+    font-family: 'Courier New', Courier, monospace;
+    font-size: 0.85rem;
+    padding: 15px;
+    border-radius: 5px;
+    overflow-y: scroll;
+    white-space: pre-wrap;
+}
+
+#bot-status {
+    transition: background-color 0.5s ease;
+}
+
+.pnl-positive {
+    color: #28a745;
+}
+
+.pnl-negative {
+    color: #dc3545;
+}
+
+.position-card {
+    background-color: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-radius: .25rem;
+    padding: 1rem;
+    margin-bottom: 1rem;
+}
+
+.position-header {
+    font-weight: bold;
+}
+
+.chart-container {
+    position: relative;
+    height: 40vh;
+    width: 100%;
+}

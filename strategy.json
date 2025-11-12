@@ -1,0 +1,31 @@
+{
+  "comment": "This file contains the rules for the trading engine. It is read by engine.py and can be updated by a strategist LLM.",
+  "strategy_name": "EMA_Trend_RSI_Pullback_v1",
+
+  "filters": {
+    "use_ema_trend_filter": true,
+    "ema_trend_period": 200,
+    "no_trade_zone_pct": 0.005,
+    "use_rsi_pullback": true,
+    "rsi_period": 14,
+    "use_volume_confirmation": true,
+    "volume_sma_period": 20
+  },
+
+  "long_conditions": {
+    "rsi_entry_min": 30,
+    "rsi_entry_max": 50,
+    "rsi_exit_extreme": 75
+  },
+
+  "short_conditions": {
+    "rsi_entry_min": 50,
+    "rsi_entry_max": 70,
+    "rsi_exit_extreme": 25
+  },
+
+  "trade_parameters": {
+    "default_leverage": 20,
+    "trade_amount_pct_of_balance": 10
+  }
+}
