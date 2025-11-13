@@ -42,3 +42,10 @@ RECEIVER_EMAIL = os.getenv("RECEIVER_EMAIL")
 TAKE_PROFIT_PCT = float(os.getenv("TAKE_PROFIT_PCT", 25.0)) # Yüzde olarak
 STOP_LOSS_PCT = float(os.getenv("STOP_LOSS_PCT", 15.0))   # Yüzde olarak (Dinamik SL aktifken kullanılmayacak)
 ATR_MULTIPLIER = float(os.getenv("ATR_MULTIPLIER", 2.0))    # Dinamik Stop-Loss için ATR çarpanı
+
+# --- YENİ EKLENEN BÖLÜM ---
+# Trailing Stop Loss Parametreleri
+ENABLE_TRAILING_STOP = os.getenv("ENABLE_TRAILING_STOP", "True").lower() in ('true', '1', 't')
+TRAILING_STOP_TRIGGER_PCT = float(os.getenv("TRAILING_STOP_TRIGGER_PCT", 10.0))  # TSL'in devreye girmesi için gereken minimum kâr (%)
+TRAILING_STOP_DISTANCE_PCT = float(os.getenv("TRAILING_STOP_DISTANCE_PCT", 10.0)) # En yüksek kârdan ne kadar geride takip edeceği (%)
+# --- YENİ BÖLÜM SONU ---

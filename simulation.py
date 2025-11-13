@@ -65,7 +65,7 @@ class SimulatedPortfolio:
         position = self.positions.get(symbol)
         if not position:
             return "flat", 0
-        return position['side'], position['quantity']
+        return position['side'], position['quantity'] # quantity, amount değil
 
     def get_all_open_positions(self):
         return self.positions
@@ -130,8 +130,10 @@ class SimulatedPortfolio:
             'quantity': quantity,
             'leverage': leverage,
             'margin': margin_used,
+            'unreal_pnl': 0, # İsim tutarlılığı için 'unrealized_pnl' olmalı
             'unrealized_pnl': 0,
-            'atr_at_entry': market_data.get('atr_14', 0) # Store ATR on entry
+            'atr_at_entry': market_data.get('atr_14', 0), # Store ATR on entry
+            'highest_pnl_pct': 0.0 # --- YENİ EKLENEN SATIR ---
         }
         print(f"[SIM] POSITION OPENED: {symbol} {side.upper()} {quantity:.6f} @ {price}. Margin: {margin_used:.2f} USDT. New Balance: {self.balance:.2f} USDT")
         self._save_state()
@@ -190,7 +192,7 @@ class SimulatedPortfolio:
             return 0
         
         price_diff = current_price - position['entry_price']
-        if position['side'] == 'sell':
+        if position['side'] in ['sell', 'short']: # 'short'u da kapsayalım
             price_diff = -price_diff
             
         return price_diff * position['quantity']
@@ -219,6 +221,18 @@ class SimulatedPortfolio:
                 position['current_price'] = current_price
                 position['unrealized_pnl'] = self._calculate_pnl(symbol, current_price)
                 updated_count += 1
+                
+                # --- YENİ EKLENEN BLOK ---
+                # En yüksek PnL yüzdesini (High-Water Mark) güncelle
+                unrealized_pnl = position['unrealized_pnl']
+                margin = position.get('margin', 0)
+                if margin > 0:
+                    pnl_pct = (unrealized_pnl / margin) * 100
+                    current_highest_pnl = position.get('highest_pnl_pct', 0.0)
+                    if pnl_pct > current_highest_pnl:
+                        position['highest_pnl_pct'] = pnl_pct
+                # --- YENİ BLOK SONU ---
+
                 # This log can be very noisy, let's comment it out for now.
                 # print(f"[SIM] Updated {symbol}: Old Price: {old_price}, New Price: {current_price}, Unrealized PnL: {position['unrealized_pnl']:.4f}")
             else:
@@ -230,4 +244,3 @@ class SimulatedPortfolio:
             print(f"[SIM] PnL update complete. Updated {updated_count}/{len(symbols_to_update)} positions.")
         else:
             print("[SIM] No positions were updated, but state saved for equity tracking.")
-

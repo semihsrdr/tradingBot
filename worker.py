@@ -20,10 +20,16 @@ if config.SIMULATION_MODE:
     trade.set_portfolio(portfolio)
     print(f"[INIT] Portfolio initialized and shared with trade module.")
 
+# --- YENİ GÜNCELLENMİŞ FONKSİYON ---
 def check_tp_sl(market_data_cache: dict, cycle_errors: list):
     """
-    Checks open positions and closes them if TP (percentage-based) or
-    dynamic SL (ATR-based) levels are hit.
+    Checks open positions and closes them if TP, Trailing SL, or
+    static SL levels are hit.
+    
+    Priority:
+    1. Take Profit
+    2. Trailing Stop Loss (if active)
+    3. Static Stop Loss (if TSL is not active)
     """
     if not config.SIMULATION_MODE:
         print("TP/SL check is currently only supported in simulation mode.")
@@ -48,67 +54,95 @@ def check_tp_sl(market_data_cache: dict, cycle_errors: list):
             current_price = position.get('current_price', 0)
             atr_at_entry = position.get('atr_at_entry', 0)
             side = position.get('side')
+            
+            # YENİ: Pozisyonun gördüğü en yüksek kârı al
+            highest_pnl_pct = position.get('highest_pnl_pct', 0.0)
 
             if margin == 0 or entry_price == 0:
                 continue
 
-            # 1. Check for Take Profit (percentage-based)
+            # PnL Yüzdesini hesapla
             pnl_pct = (unrealized_pnl / margin) * 100
+
+            # --- POZİSYON KAPATMA MANTIĞI ---
+
+            # 1. ÖNCE: TAKE PROFIT KONTROLÜ (Sabit Kâr Al)
             if pnl_pct >= config.TAKE_PROFIT_PCT:
                 reason = f"TAKE PROFIT triggered at {pnl_pct:.2f}%"
                 print(f"✅ [{symbol}] {reason}")
                 trade.parse_and_execute(
                     {"command": "close", "reasoning": reason},
-                    symbol,
-                    market_summary,
-                    position_status
+                    symbol, market_summary, position_status
                 )
-                continue  # Move to next position
+                continue  # Pozisyon kapandı, sonraki sembole geç
 
-            # 2. Check for Dynamic Stop Loss (ATR-based)
-            if atr_at_entry > 0:
-                stop_loss_price = 0
-                if side in ['long', 'buy']:
-                    stop_loss_price = entry_price - (atr_at_entry * config.ATR_MULTIPLIER)
-                    print(f"[{symbol}] PnL: {pnl_pct:.2f}% | Current: {current_price} | Dynamic SL Price: < {stop_loss_price:.4f}")
-                    if current_price <= stop_loss_price:
-                        reason = f"DYNAMIC STOP LOSS triggered at price {current_price:.4f} (ATR: {atr_at_entry}, Multiplier: {config.ATR_MULTIPLIER})"
-                        print(f"❌ [{symbol}] {reason}")
-                        trade.parse_and_execute(
-                            {"command": "close", "reasoning": reason},
-                            symbol,
-                            market_summary,
-                            position_status
-                        )
-                elif side in ['short', 'sell']:
-                    stop_loss_price = entry_price + (atr_at_entry * config.ATR_MULTIPLIER)
-                    print(f"[{symbol}] PnL: {pnl_pct:.2f}% | Current: {current_price} | Dynamic SL Price: > {stop_loss_price:.4f}")
-                    if current_price >= stop_loss_price:
-                        reason = f"DYNAMIC STOP LOSS triggered at price {current_price:.4f} (ATR: {atr_at_entry}, Multiplier: {config.ATR_MULTIPLIER})"
-                        print(f"❌ [{symbol}] {reason}")
-                        trade.parse_and_execute(
-                            {"command": "close", "reasoning": reason},
-                            symbol,
-                            market_summary,
-                            position_status
-                        )
-            else:
-                # Fallback to old percentage-based SL if ATR is not available
-                print(f"[{symbol}] PnL: {pnl_pct:.2f}% | Current: {current_price} | (Fallback SL: < {-config.STOP_LOSS_PCT}%)")
-                if pnl_pct <= -config.STOP_LOSS_PCT:
-                    reason = f"FALLBACK STOP LOSS triggered at {pnl_pct:.2f}%"
+            # 2. YENİ: TRAILING STOP LOSS KONTROLÜ
+            trailing_sl_active = False
+            if config.ENABLE_TRAILING_STOP and highest_pnl_pct >= config.TRAILING_STOP_TRIGGER_PCT:
+                trailing_sl_active = True
+                
+                # Yeni TSL kâr seviyesini belirle
+                trailing_stop_level_pct = highest_pnl_pct - config.TRAILING_STOP_DISTANCE_PCT
+
+                print(f"[{symbol}] PnL: {pnl_pct:.2f}% | Highest: {highest_pnl_pct:.2f}% | Trailing SL: < {trailing_stop_level_pct:.2f}%")
+
+                if pnl_pct <= trailing_stop_level_pct:
+                    reason = f"TRAILING STOP LOSS triggered at {pnl_pct:.2f}%. (Highest: {highest_pnl_pct:.2f}%)"
                     print(f"❌ [{symbol}] {reason}")
                     trade.parse_and_execute(
                         {"command": "close", "reasoning": reason},
-                        symbol,
-                        market_summary,
-                        position_status
+                        symbol, market_summary, position_status
                     )
+                    continue # Pozisyon kapandı, sonraki sembole geç
+            
+            # 3. SONRA: STATİK STOP LOSS KONTROLÜ (Eğer TSL aktif değilse)
+            # TSL devreye girdiyse (örn: kâr %10'da), artık pozisyonun %-5'e düşmesi
+            # gibi bir normal SL ile kapanmasını istemeyiz.
+            if not trailing_sl_active:
+                if atr_at_entry > 0:
+                    stop_loss_price = 0
+                    if side in ['long', 'buy']:
+                        stop_loss_price = entry_price - (atr_at_entry * config.ATR_MULTIPLIER)
+                        print(f"[{symbol}] PnL: {pnl_pct:.2f}% | Current: {current_price} | Static SL: < {stop_loss_price:.4f}")
+                        if current_price <= stop_loss_price:
+                            reason = f"DYNAMIC (ATR) STOP LOSS triggered at {current_price:.4f}"
+                            print(f"❌ [{symbol}] {reason}")
+                            trade.parse_and_execute(
+                                {"command": "close", "reasoning": reason},
+                                symbol, market_summary, position_status
+                            )
+                            continue
+                    
+                    elif side in ['short', 'sell']:
+                        stop_loss_price = entry_price + (atr_at_entry * config.ATR_MULTIPLIER)
+                        print(f"[{symbol}] PnL: {pnl_pct:.2f}% | Current: {current_price} | Static SL: > {stop_loss_price:.4f}")
+                        if current_price >= stop_loss_price:
+                            reason = f"DYNAMIC (ATR) STOP LOSS triggered at {current_price:.4f}"
+                            print(f"❌ [{symbol}] {reason}")
+                            trade.parse_and_execute(
+                                {"command": "close", "reasoning": reason},
+                                symbol, market_summary, position_status
+                            )
+                            continue
+                else:
+                    # ATR yoksa Fallback (Yedek) Yüzdesel SL
+                    print(f"[{symbol}] PnL: {pnl_pct:.2f}% | (Fallback SL: < {-config.STOP_LOSS_PCT}%)")
+                    if pnl_pct <= -config.STOP_LOSS_PCT:
+                        reason = f"FALLBACK STOP LOSS triggered at {pnl_pct:.2f}%"
+                        print(f"❌ [{symbol}] {reason}")
+                        trade.parse_and_execute(
+                            {"command": "close", "reasoning": reason},
+                            symbol, market_summary, position_status
+                        )
+                        continue
 
         except Exception as e:
             error_msg = f"[{symbol}] Error during TP/SL check: {e}"
             print(error_msg)
             cycle_errors.append(error_msg)
+            import traceback
+            traceback.print_exc()
+# --- GÜNCELLENEN FONKSİYONUN SONU ---
 
 
 # --- State Management ---
@@ -148,7 +182,7 @@ def main_job():
     print(f"\n{'='*60}")
     print(f"--- Cycle Start: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (Cycle #{cycle_count}) ---")
     print(f"--- Strategy: {strategy_rules.get('strategy_name', 'N/A')} ---")
-    print(f"{'='*60}")
+    print(f"{'='*66}")
 
     # --- "CYCLE CACHE" DATA FETCH ---
     # 1. Fetch market data for all symbols ONCE at the beginning of the cycle.
@@ -214,7 +248,7 @@ def main_job():
             # c. Execute the decision, passing the cached data
             trade.parse_and_execute(decision, symbol, market_summary, position_status)
             
-            is_cycle_successful = True
+            # is_cycle_successful = True # Bu değişken artık kullanılmıyor, kaldırılabilir
             
         except Exception as e:
             error_msg = f"[{symbol}] An unexpected error occurred in the main loop: {e}"
@@ -268,7 +302,11 @@ def main_job():
 print("--- RULE-BASED Scalping Bot Initialized ---")
 print(f"Trading Assets: {', '.join(config.TRADING_SYMBOLS)}")
 print(f"Engine: Running based on rules from 'strategy.json'")
-print(f"Strategy: TP: {config.TAKE_PROFIT_PCT}% / SL: {config.STOP_LOSS_PCT}%")
+# YENİ: Başlangıç log mesajına TSL bilgisini ekleyelim
+print(f"Strategy: TP: {config.TAKE_PROFIT_PCT}% / Static SL (ATR): {config.ATR_MULTIPLIER}x")
+print(f"Trailing SL: {'Active' if config.ENABLE_TRAILING_STOP else 'Inactive'}")
+if config.ENABLE_TRAILING_STOP:
+    print(f"  -> Trigger: {config.TRAILING_STOP_TRIGGER_PCT}%, Distance: {config.TRAILING_STOP_DISTANCE_PCT}%")
 print(f"Simulation Mode: {'Active' if config.SIMULATION_MODE else 'Inactive'}")
 print(f"Run Interval: Every 1 minute (analyzing 3m candles)")
 print("------------------------------------")
