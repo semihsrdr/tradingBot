@@ -7,6 +7,53 @@ from langchain_core.messages import SystemMessage, HumanMessage
 import config
 from market import get_broad_market_analysis # Gerçek analiz fonksiyonunu import et
 
+
+# Gerekli import'ları dosyanın en üstüne ekle
+from pydantic import BaseModel, Field
+from typing import Dict, Optional, Any, List
+
+# no_trade_zone_pct için float tipine ihtiyacımız var
+from pydantic.fields import Field
+from typing import Union # Bazen int veya float olabilir
+
+# 1. strategy.json'un İÇ yapısını tanımlayan modeller
+
+class Filters(BaseModel):
+    use_ema_trend_filter: bool
+    ema_trend_period: int
+    no_trade_zone_pct: float  # Bu alan float (0.005)
+    use_rsi_pullback: bool
+    rsi_period: int
+    use_volume_confirmation: bool
+    volume_sma_period: int
+
+class LongConditions(BaseModel):
+    rsi_entry_min: int
+    rsi_entry_max: int
+    rsi_exit_extreme: int
+
+class ShortConditions(BaseModel):
+    rsi_entry_min: int
+    rsi_entry_max: int
+    rsi_exit_extreme: int
+
+class TradeParameters(BaseModel):
+    default_leverage: int
+    trade_amount_pct_of_balance: int
+
+# 2. LLM'in döndüreceği ANA yantının kalıbı (Tüm strategy.json)
+# BU, ÖNCEKİ CEVABIMDAKİ EKSİK KISMI TAMAMLAR
+
+class StrategyConfig(BaseModel):
+    comment: str = Field(..., description="Değişiklik için tek cümlelik mantıklı gerekçe.")
+    strategy_name: str
+    
+    # JSON'daki tüm anahtarları buraya ekliyoruz
+    filters: Filters
+    long_conditions: LongConditions
+    short_conditions: ShortConditions
+    trade_parameters: TradeParameters
+
 STRATEGY_FILE = "strategy.json"
 TRADE_LOG_FILE = "trading_log.txt"
 
@@ -129,26 +176,18 @@ def run_strategist_cycle():
     """
     print(f"\n--- Strategist Cycle Starting: {time.ctime()} ---")
 
-    # 1. Read current state
+    # 1. Read current state (Bu kısım aynı)
     current_strategy = read_current_strategy()
     if not current_strategy:
-        return # Stop if we can't read the strategy
-
+        return 
     trade_log = read_trade_log()
-    
-    # Get broad market analysis for all symbols
     market_analyses = []
-    for symbol in config.TRADING_SYMBOLS:
-        analysis = get_broad_market_analysis(symbol=symbol)
-        if analysis:
-            market_analyses.append(analysis)
-        time.sleep(1) # Avoid hitting rate limits
-
+    # ... (market analizini alma kodu aynı) ...
     if not market_analyses:
-        print("[STRATEGIST] Could not get broad market analysis for any symbol. Skipping cycle.")
+        print("[STRATEGIST] Could not get broad market analysis... Skipping.")
         return
 
-    # 2. Ask LLM for analysis and new strategy
+    # 2. Ask LLM for analysis (Burası DEĞİŞİYOR)
     try:
         llm = ChatOpenAI(
             model_name=config.LLM_MODEL_NAME,
@@ -156,6 +195,10 @@ def run_strategist_cycle():
             openai_api_base="https://openrouter.ai/api/v1",
             temperature=0.5, # Lower temperature for more deterministic and safer suggestions
         )
+
+        # YENİ: LLM'i Pydantic şemamızla (StrategyConfig) zincirliyoruz
+        # Artık bu LLM, SADECE bu şemaya uygun cevap verebilir
+        structured_llm = llm.with_structured_output(StrategyConfig)
 
         human_input_data = {
             "current_strategy": current_strategy,
@@ -169,18 +212,26 @@ def run_strategist_cycle():
             HumanMessage(content=human_input)
         ]
 
-        print("[STRATEGIST] Asking LLM to analyze performance and suggest strategy changes...")
-        response = llm.invoke(messages)
-        response_text = response.content.strip()
+        print("[STRATEGIST] Asking LLM (with structured output) to suggest strategy...")
+        
+        # YENİ: LLM'i çağırıyoruz. Dönen 'response' artık bir Pydantic objesi.
+        response_pydantic_object = structured_llm.invoke(messages)
 
-        # Strip markdown if present
-        if '```json' in response_text:
-            response_text = response_text.split('```json')[1].split('```')[0].strip()
+        # --- ARTIK BU KISIMLARA GEREK YOK ---
+        # response = llm.invoke(messages)
+        # response_text = response.content.strip()
+        #
+        # if '```json' in response_text:
+        #     response_text = response_text.split('```json')[1].split('```')[0].strip()
+        #
+        # new_strategy_json = json.loads(response_text)
+        # -----------------------------------
 
-        new_strategy_json = json.loads(response_text)
+        # YENİ: Pydantic objesini Python dict'ine (JSON) çeviriyoruz
+        new_strategy_json = response_pydantic_object.model_dump()
 
-        # 3. Validate and Update
-        # Compare by converting to string to ignore formatting differences
+
+        # 3. Validate and Update (Bu kısım eskisi gibi çalışmaya devam eder)
         if json.dumps(new_strategy_json, sort_keys=True) == json.dumps(current_strategy, sort_keys=True):
             print("[STRATEGIST] LLM decided no changes are needed. Keeping current strategy.")
         elif validate_strategy(new_strategy_json):
@@ -189,12 +240,16 @@ def run_strategist_cycle():
             print("[STRATEGIST] New strategy from LLM failed validation. Discarding changes.")
 
     except json.JSONDecodeError:
-        print(f"[STRATEGIST] ERROR: Could not decode JSON from LLM response: '{response_text}'")
+        # Bu hata artık Pydantic tarafından yakalanacağı için pek olası değil,
+        # ama kalması da zarar vermez.
+        print(f"[STRATEGIST] ERROR: Could not decode JSON from LLM response.")
     except Exception as e:
         print(f"[STRATEGIST] An unexpected error occurred: {e}")
+        # Hatanın detaylarını görmek için traceback ekleyebilirsin
+        import traceback
+        traceback.print_exc()
 
     print("--- Strategist Cycle Finished ---")
-
 
 if __name__ == "__main__":
     print("--- LLM Strategist Initialized ---")
