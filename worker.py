@@ -20,7 +20,7 @@ if config.SIMULATION_MODE:
     trade.set_portfolio(portfolio)
     print(f"[INIT] Portfolio initialized and shared with trade module.")
 
-def check_tp_sl():
+def check_tp_sl(market_data_cache: dict, cycle_errors: list):
     """
     Checks open positions and closes them if TP (percentage-based) or
     dynamic SL (ATR-based) levels are hit.
@@ -36,6 +36,12 @@ def check_tp_sl():
     print("\n[MGM] Checking open positions for TP/SL...")
     for symbol, position in list(open_positions.items()):
         try:
+            market_summary = market_data_cache.get(symbol)
+            if not market_summary:
+                print(f"[{symbol}] No market data in cache for TP/SL check. Skipping.")
+                continue
+
+            position_status = portfolio.get_position_details(symbol)
             margin = position.get('margin', 0)
             unrealized_pnl = position.get('unrealized_pnl', 0)
             entry_price = position.get('entry_price', 0)
@@ -51,8 +57,13 @@ def check_tp_sl():
             if pnl_pct >= config.TAKE_PROFIT_PCT:
                 reason = f"TAKE PROFIT triggered at {pnl_pct:.2f}%"
                 print(f"✅ [{symbol}] {reason}")
-                trade.parse_and_execute({"command": "close", "reasoning": reason}, symbol)
-                continue # Move to next position
+                trade.parse_and_execute(
+                    {"command": "close", "reasoning": reason},
+                    symbol,
+                    market_summary,
+                    position_status
+                )
+                continue  # Move to next position
 
             # 2. Check for Dynamic Stop Loss (ATR-based)
             if atr_at_entry > 0:
@@ -63,24 +74,41 @@ def check_tp_sl():
                     if current_price <= stop_loss_price:
                         reason = f"DYNAMIC STOP LOSS triggered at price {current_price:.4f} (ATR: {atr_at_entry}, Multiplier: {config.ATR_MULTIPLIER})"
                         print(f"❌ [{symbol}] {reason}")
-                        trade.parse_and_execute({"command": "close", "reasoning": reason}, symbol)
+                        trade.parse_and_execute(
+                            {"command": "close", "reasoning": reason},
+                            symbol,
+                            market_summary,
+                            position_status
+                        )
                 elif side in ['short', 'sell']:
                     stop_loss_price = entry_price + (atr_at_entry * config.ATR_MULTIPLIER)
                     print(f"[{symbol}] PnL: {pnl_pct:.2f}% | Current: {current_price} | Dynamic SL Price: > {stop_loss_price:.4f}")
                     if current_price >= stop_loss_price:
                         reason = f"DYNAMIC STOP LOSS triggered at price {current_price:.4f} (ATR: {atr_at_entry}, Multiplier: {config.ATR_MULTIPLIER})"
                         print(f"❌ [{symbol}] {reason}")
-                        trade.parse_and_execute({"command": "close", "reasoning": reason}, symbol)
+                        trade.parse_and_execute(
+                            {"command": "close", "reasoning": reason},
+                            symbol,
+                            market_summary,
+                            position_status
+                        )
             else:
                 # Fallback to old percentage-based SL if ATR is not available
                 print(f"[{symbol}] PnL: {pnl_pct:.2f}% | Current: {current_price} | (Fallback SL: < {-config.STOP_LOSS_PCT}%)")
                 if pnl_pct <= -config.STOP_LOSS_PCT:
                     reason = f"FALLBACK STOP LOSS triggered at {pnl_pct:.2f}%"
                     print(f"❌ [{symbol}] {reason}")
-                    trade.parse_and_execute({"command": "close", "reasoning": reason}, symbol)
+                    trade.parse_and_execute(
+                        {"command": "close", "reasoning": reason},
+                        symbol,
+                        market_summary,
+                        position_status
+                    )
 
         except Exception as e:
-            print(f"[{symbol}] Error during TP/SL check: {e}")
+            error_msg = f"[{symbol}] Error during TP/SL check: {e}"
+            print(error_msg)
+            cycle_errors.append(error_msg)
 
 
 # --- State Management ---
@@ -116,7 +144,6 @@ def main_job():
         return
 
     cycle_errors = []
-    is_cycle_successful = False
 
     print(f"\n{'='*60}")
     print(f"--- Cycle Start: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (Cycle #{cycle_count}) ---")
@@ -150,7 +177,7 @@ def main_job():
     # 3. Check for TP/SL on existing positions
     if config.SIMULATION_MODE and portfolio:
         print("\n[STEP 3] Checking TP/SL triggers...")
-        check_tp_sl() # This function internally uses the updated portfolio state
+        check_tp_sl(market_data_cache, cycle_errors) # This function internally uses the updated portfolio state
 
     # 4. Get a fresh portfolio summary
     portfolio_summary = {}
@@ -211,22 +238,24 @@ def main_job():
             print(f"Error saving state to file: {e}")
 
     # 7. Handle Error and Summary Email Logic
-    if not is_cycle_successful and len(config.TRADING_SYMBOLS) > 0:
+    if cycle_errors:
         consecutive_error_cycles += 1
-        print(f"\n[WORKER] Cycle failed for all symbols. Consecutive error count: {consecutive_error_cycles}")
-        last_cycle_errors = cycle_errors
+        last_cycle_errors.extend(cycle_errors)
+        print(f"\n[WORKER] Cycle finished with {len(cycle_errors)} error(s). Total accumulated errors: {len(last_cycle_errors)}. Consecutive error cycles: {consecutive_error_cycles}.")
     else:
         if consecutive_error_cycles > 0:
             print(f"\n[WORKER] Cycle succeeded. Resetting consecutive error count from {consecutive_error_cycles} to 0.")
         consecutive_error_cycles = 0
+        last_cycle_errors = []
 
-    if consecutive_error_cycles >= 5:
-        print(f"\n[WORKER] Reached {consecutive_error_cycles} consecutive errors. Sending alert email...")
+    if len(last_cycle_errors) >= 15:
+        print(f"\n[WORKER] Accumulated {len(last_cycle_errors)} errors over {consecutive_error_cycles} cycles. Sending alert email...")
         mailer.send_error_email(last_cycle_errors)
-        consecutive_error_cycles = 0 # Reset after sending to avoid spam
+        consecutive_error_cycles = 0
+        last_cycle_errors = []
 
     # Send summary email every 30 cycles
-    if cycle_count > 0 and cycle_count % 30 == 0:
+    if cycle_count > 0 and cycle_count % 120 == 0:
         print(f"\n[WORKER] Reached cycle {cycle_count}. Sending periodic summary email...")
         open_positions = portfolio.get_all_open_positions() if portfolio else {}
         mailer.send_summary_email(portfolio_summary, open_positions)

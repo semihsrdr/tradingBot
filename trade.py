@@ -144,5 +144,8 @@ if __name__ == "__main__":
         "reasoning": "Test reasoning."
     }
     test_symbol = "BTC/USDT"
-    parse_and_execute(test_decision, test_symbol)
+    # Get required data for the function call
+    market_data = get_market_summary(symbol=test_symbol)
+    position_status = get_current_position(symbol=test_symbol)
+    parse_and_execute(test_decision, test_symbol, market_data, position_status)
     print("---")
