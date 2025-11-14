@@ -183,7 +183,7 @@ def run_strategist_cycle():
     trade_log = read_trade_log()
     market_analyses = []
     for symbol in config.TRADING_SYMBOLS:
-        analysis = get_broad_market_analysis(symbol)
+        analysis = get_broad_market_analysis(symbol, interval='15m')
         if analysis:
             market_analyses.append(analysis)
     if not market_analyses:

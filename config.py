@@ -39,9 +39,10 @@ SENDER_PASSWORD = os.getenv("SENDER_PASSWORD")
 RECEIVER_EMAIL = os.getenv("RECEIVER_EMAIL")
 
 # Trade Strateji Ayarları
-TAKE_PROFIT_PCT = float(os.getenv("TAKE_PROFIT_PCT", 25.0)) # Yüzde olarak
-STOP_LOSS_PCT = float(os.getenv("STOP_LOSS_PCT", 15.0))   # Yüzde olarak (Dinamik SL aktifken kullanılmayacak)
+TAKE_PROFIT_PCT = float(os.getenv("TAKE_PROFIT_PCT", 20.0)) # Yüzde olarak
+STOP_LOSS_PCT = float(os.getenv("STOP_LOSS_PCT", 10.0))   # Yüzde olarak (Dinamik SL aktifken kullanılmayacak)
 ATR_MULTIPLIER = float(os.getenv("ATR_MULTIPLIER", 2.0))    # Dinamik Stop-Loss için ATR çarpanı
+COOLDOWN_PERIOD_MINUTES = int(os.getenv("COOLDOWN_PERIOD_MINUTES", 30)) # Stop-loss sonrası bekleme süresi (dakika)
 
 # --- YENİ EKLENEN BÖLÜM ---
 # Trailing Stop Loss Parametreleri

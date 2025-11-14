@@ -4,7 +4,7 @@ import market
 import engine # trader'ı engine ile değiştiriyoruz
 import config
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 import trade_logger
 import mailer # Import the new mailer module
 
@@ -24,12 +24,7 @@ if config.SIMULATION_MODE:
 def check_tp_sl(market_data_cache: dict, cycle_errors: list):
     """
     Checks open positions and closes them if TP, Trailing SL, or
-    static SL levels are hit.
-    
-    Priority:
-    1. Take Profit
-    2. Trailing Stop Loss (if active)
-    3. Static Stop Loss (if TSL is not active)
+    static SL levels are hit. Also initiates a cooldown period on SL.
     """
     if not config.SIMULATION_MODE:
         print("TP/SL check is currently only supported in simulation mode.")
@@ -54,51 +49,40 @@ def check_tp_sl(market_data_cache: dict, cycle_errors: list):
             current_price = position.get('current_price', 0)
             atr_at_entry = position.get('atr_at_entry', 0)
             side = position.get('side')
-            
-            # YENİ: Pozisyonun gördüğü en yüksek kârı al
             highest_pnl_pct = position.get('highest_pnl_pct', 0.0)
 
             if margin == 0 or entry_price == 0:
                 continue
 
-            # PnL Yüzdesini hesapla
             pnl_pct = (unrealized_pnl / margin) * 100
 
-            # --- POZİSYON KAPATMA MANTIĞI ---
-
-            # 1. ÖNCE: TAKE PROFIT KONTROLÜ (Sabit Kâr Al)
+            # --- TAKE PROFIT CHECK ---
             if pnl_pct >= config.TAKE_PROFIT_PCT:
                 reason = f"TAKE PROFIT triggered at {pnl_pct:.2f}%"
                 print(f"✅ [{symbol}] {reason}")
-                trade.parse_and_execute(
-                    {"command": "close", "reasoning": reason},
-                    symbol, market_summary, position_status
-                )
-                continue  # Pozisyon kapandı, sonraki sembole geç
+                trade.parse_and_execute({"command": "close", "reasoning": reason}, symbol, market_summary, position_status)
+                continue
 
-            # 2. YENİ: TRAILING STOP LOSS KONTROLÜ
+            # --- TRAILING STOP LOSS CHECK ---
             trailing_sl_active = False
             if config.ENABLE_TRAILING_STOP and highest_pnl_pct >= config.TRAILING_STOP_TRIGGER_PCT:
                 trailing_sl_active = True
-                
-                # Yeni TSL kâr seviyesini belirle
                 trailing_stop_level_pct = highest_pnl_pct - config.TRAILING_STOP_DISTANCE_PCT
-
                 print(f"[{symbol}] PnL: {pnl_pct:.2f}% | Highest: {highest_pnl_pct:.2f}% | Trailing SL: < {trailing_stop_level_pct:.2f}%")
-
                 if pnl_pct <= trailing_stop_level_pct:
                     reason = f"TRAILING STOP LOSS triggered at {pnl_pct:.2f}%. (Highest: {highest_pnl_pct:.2f}%)"
                     print(f"❌ [{symbol}] {reason}")
-                    trade.parse_and_execute(
-                        {"command": "close", "reasoning": reason},
-                        symbol, market_summary, position_status
-                    )
-                    continue # Pozisyon kapandı, sonraki sembole geç
+                    trade.parse_and_execute({"command": "close", "reasoning": reason}, symbol, market_summary, position_status)
+                    # INITIATE COOLDOWN
+                    cooldown_until = datetime.now() + timedelta(minutes=config.COOLDOWN_PERIOD_MINUTES)
+                    cooldown_manager[symbol] = {"direction": side, "until": cooldown_until}
+                    print(f"[{symbol}] COOLDOWN INITIATED for {side.upper()} trades until {cooldown_until.strftime('%H:%M:%S')}.")
+                    continue
             
-            # 3. SONRA: STATİK STOP LOSS KONTROLÜ (Eğer TSL aktif değilse)
-            # TSL devreye girdiyse (örn: kâr %10'da), artık pozisyonun %-5'e düşmesi
-            # gibi bir normal SL ile kapanmasını istemeyiz.
+            # --- STATIC STOP LOSS CHECK (if TSL is not active) ---
             if not trailing_sl_active:
+                reason = None
+                # DYNAMIC (ATR) STOP LOSS
                 if atr_at_entry > 0:
                     stop_loss_price = 0
                     if side in ['long', 'buy']:
@@ -106,35 +90,25 @@ def check_tp_sl(market_data_cache: dict, cycle_errors: list):
                         print(f"[{symbol}] PnL: {pnl_pct:.2f}% | Current: {current_price} | Static SL: < {stop_loss_price:.4f}")
                         if current_price <= stop_loss_price:
                             reason = f"DYNAMIC (ATR) STOP LOSS triggered at {current_price:.4f}"
-                            print(f"❌ [{symbol}] {reason}")
-                            trade.parse_and_execute(
-                                {"command": "close", "reasoning": reason},
-                                symbol, market_summary, position_status
-                            )
-                            continue
-                    
                     elif side in ['short', 'sell']:
                         stop_loss_price = entry_price + (atr_at_entry * config.ATR_MULTIPLIER)
                         print(f"[{symbol}] PnL: {pnl_pct:.2f}% | Current: {current_price} | Static SL: > {stop_loss_price:.4f}")
                         if current_price >= stop_loss_price:
                             reason = f"DYNAMIC (ATR) STOP LOSS triggered at {current_price:.4f}"
-                            print(f"❌ [{symbol}] {reason}")
-                            trade.parse_and_execute(
-                                {"command": "close", "reasoning": reason},
-                                symbol, market_summary, position_status
-                            )
-                            continue
+                # FALLBACK (Percentage) STOP LOSS
                 else:
-                    # ATR yoksa Fallback (Yedek) Yüzdesel SL
                     print(f"[{symbol}] PnL: {pnl_pct:.2f}% | (Fallback SL: < {-config.STOP_LOSS_PCT}%)")
                     if pnl_pct <= -config.STOP_LOSS_PCT:
                         reason = f"FALLBACK STOP LOSS triggered at {pnl_pct:.2f}%"
-                        print(f"❌ [{symbol}] {reason}")
-                        trade.parse_and_execute(
-                            {"command": "close", "reasoning": reason},
-                            symbol, market_summary, position_status
-                        )
-                        continue
+                
+                if reason:
+                    print(f"❌ [{symbol}] {reason}")
+                    trade.parse_and_execute({"command": "close", "reasoning": reason}, symbol, market_summary, position_status)
+                    # INITIATE COOLDOWN
+                    cooldown_until = datetime.now() + timedelta(minutes=config.COOLDOWN_PERIOD_MINUTES)
+                    cooldown_manager[symbol] = {"direction": side, "until": cooldown_until}
+                    print(f"[{symbol}] COOLDOWN INITIATED for {side.upper()} trades until {cooldown_until.strftime('%H:%M:%S')}.")
+                    continue
 
         except Exception as e:
             error_msg = f"[{symbol}] Error during TP/SL check: {e}"
@@ -150,6 +124,7 @@ cycle_count = 0
 consecutive_error_cycles = 0
 last_cycle_errors = []
 strategy_rules = {}
+cooldown_manager = {}
 # --- End State Management ---
 
 def load_strategy():
@@ -189,7 +164,7 @@ def main_job():
     print("\n[STEP 1] Fetching market data for all symbols...")
     market_data_cache = {}
     for symbol in config.TRADING_SYMBOLS:
-        summary = market.get_market_summary(symbol=symbol, interval='3m')
+        summary = market.get_market_summary(symbol=symbol, interval='15m')
         if summary:
             market_data_cache[symbol] = summary
         else:
@@ -234,21 +209,31 @@ def main_job():
             # a. Get current position status
             position_status = trade.get_current_position(symbol=symbol)
             
-            # b. Get trade decision from the RULE-BASED ENGINE
+            # b. Check for and manage cooldown period
+            cooldown_status = None
+            if symbol in cooldown_manager:
+                cooldown_info = cooldown_manager[symbol]
+                if datetime.now() < cooldown_info["until"]:
+                    cooldown_status = cooldown_info # Pass the active cooldown info
+                    print(f"[{symbol}] Symbol is in cooldown for '{cooldown_status['direction']}' trades until {cooldown_info['until'].strftime('%H:%M:%S')}.")
+                else:
+                    print(f"[{symbol}] Cooldown expired for '{cooldown_info['direction']}' trades.")
+                    del cooldown_manager[symbol] # Cleanup expired cooldown
+            
+            # c. Get trade decision from the RULE-BASED ENGINE
             print(f"[{symbol}] Data (from cache): {json.dumps(market_summary)}")
             print(f"[{symbol}] Current Position: {position_status[0]}")
             decision = engine.decide_action(
                 strategy=strategy_rules,
                 market_data=market_summary, 
                 position_status=position_status, 
-                portfolio_summary=portfolio_summary
+                portfolio_summary=portfolio_summary,
+                cooldown_status=cooldown_status # Pass cooldown status to engine
             )
             print(f"[{symbol}] Engine Decision: '{decision.get('command')}' | Reason: {decision.get('reasoning')}")
 
-            # c. Execute the decision, passing the cached data
+            # d. Execute the decision, passing the cached data
             trade.parse_and_execute(decision, symbol, market_summary, position_status)
-            
-            # is_cycle_successful = True # Bu değişken artık kullanılmıyor, kaldırılabilir
             
         except Exception as e:
             error_msg = f"[{symbol}] An unexpected error occurred in the main loop: {e}"

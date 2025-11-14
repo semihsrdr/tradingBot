@@ -1,6 +1,6 @@
 import json
 
-def decide_action(strategy: dict, market_data: dict, position_status: tuple, portfolio_summary: dict) -> dict:
+def decide_action(strategy: dict, market_data: dict, position_status: tuple, portfolio_summary: dict, cooldown_status: dict = None) -> dict:
     """
     Decides a trading action based on a set of rules from the strategy file.
     This function is PURE Python and does not call any LLM.
@@ -10,6 +10,7 @@ def decide_action(strategy: dict, market_data: dict, position_status: tuple, por
         market_data: A dictionary with the latest market data (price, indicators).
         position_status: A tuple of ('side', quantity).
         portfolio_summary: A dictionary with portfolio details (balance, etc.).
+        cooldown_status: A dict indicating if a symbol is on cooldown for a direction.
 
     Returns:
         A decision dictionary (e.g., {"command": "long 20x", "reasoning": "...", "trade_amount_usd": 100}).
@@ -48,6 +49,19 @@ def decide_action(strategy: dict, market_data: dict, position_status: tuple, por
         return {"command": "hold", "reasoning": reason, "trade_amount_usd": 0}
 
     # --- From here, we are 'flat' and looking for an entry ---
+
+    # --- NEW RULE: Cooldown Filter ---
+    # This check is performed only when we are 'flat'.
+    if cooldown_status:
+        # Determine potential trade direction based on trend
+        potential_direction = None
+        if current_price > ema_200:
+            potential_direction = 'long'
+        elif current_price < ema_200:
+            potential_direction = 'short'
+        
+        if potential_direction and potential_direction == cooldown_status.get('direction'):
+            return {"command": "hold", "reasoning": f"Cooldown active for {potential_direction.upper()} trades after a recent stop-loss.", "trade_amount_usd": 0}
 
     # --- RULE 1: Trend Filter ---
     if filters.get('use_ema_trend_filter'):

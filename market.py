@@ -48,7 +48,7 @@ def get_market_summary(symbol=config.TRADING_SYMBOLS[0], interval='3m', limit=25
             "ema_50": round(last_candle['EMA_50'], 2),
             "ema_200": ema_200_value,
             "rsi_14": round(last_candle['RSI_14'], 2),
-            "atr_14": round(last_candle['ATRr_14'], 4), # ATR value
+            "atr_14": round(last_candle.get('ATRr_14', 0.0), 4) if pd.notna(last_candle.get('ATRr_14')) else 0.0, # ATR value
             "volume": round(last_candle['volume'], 2),
             "volume_sma_20": round(last_candle['SMA_20'], 2), # Volume SMA
             "market_trend": trend
