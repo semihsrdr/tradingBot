@@ -39,6 +39,11 @@ SENDER_PASSWORD = os.getenv("SENDER_PASSWORD")
 RECEIVER_EMAIL = os.getenv("RECEIVER_EMAIL")
 
 # Trade Strateji Ayarları
+# Çoklu Zaman Dilimi Analizi Ayarları
+TRADE_STRATEGY_TIMEFRAMES = ['15m', '30m', '1h', '2h', '4h']
+PRIMARY_TIMEFRAME = '4h'  # Ana trendi belirlemek için kullanılacak zaman dilimi
+ENTRY_TIMEFRAME = '15m'   # İşleme giriş sinyalleri için kullanılacak zaman dilimi
+
 TAKE_PROFIT_PCT = float(os.getenv("TAKE_PROFIT_PCT", 80.0)) # Yüzde olarak
 STOP_LOSS_PCT = float(os.getenv("STOP_LOSS_PCT", 25.0))   # Yüzde olarak (Dinamik SL aktifken kullanılmayacak)
 ATR_MULTIPLIER = float(os.getenv("ATR_MULTIPLIER", 2.0))    # Dinamik Stop-Loss için ATR çarpanı

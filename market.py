@@ -4,6 +4,48 @@ import pandas_ta as ta
 from exchange import get_client
 import json
 
+def get_multi_timeframe_data(symbol, timeframes=config.TRADE_STRATEGY_TIMEFRAMES, limit=250):
+    """
+    Fetches market data for multiple timeframes and calculates indicators for each.
+    
+    :param symbol: The trading symbol (e.g., 'BTC/USDT').
+    :param timeframes: A list of timeframes (e.g., ['15m', '1h', '4h']).
+    :param limit: The number of candles to fetch for each timeframe.
+    :return: A dictionary of pandas DataFrames, with timeframes as keys.
+    """
+    client = get_client()
+    multi_timeframe_data = {}
+
+    try:
+        for timeframe in timeframes:
+            # Fetch OHLCV data
+            ohlcv = client.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+            
+            # Convert to DataFrame
+            columns = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
+            df = pd.DataFrame(ohlcv, columns=columns)
+            
+            # Convert columns to numeric
+            for col in ['open', 'high', 'low', 'close', 'volume']:
+                df[col] = pd.to_numeric(df[col])
+            
+            # Calculate indicators
+            df.ta.ema(length=20, append=True)
+            df.ta.ema(length=50, append=True)
+            df.ta.ema(length=200, append=True)
+            df.ta.rsi(length=14, append=True)
+            df.ta.atr(length=14, append=True)
+            df.ta.sma(close=df['volume'], length=20, append=True, col_names='volume_sma_20')
+
+            multi_timeframe_data[timeframe] = df
+            
+        return multi_timeframe_data
+
+    except Exception as e:
+        print(f"Error fetching multi-timeframe data for {symbol}: {e}")
+        return None
+
+
 def get_market_summary(symbol=config.TRADING_SYMBOLS[0], interval='3m', limit=250):
     """
     Fetches recent candles, calculates key indicators including EMA, RSI, ATR, and Volume SMA,

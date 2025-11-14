@@ -140,13 +140,11 @@ def load_strategy():
 
 def main_job():
     """
-    Main job flow: Fetch all data once -> Update PnL -> Check TP/SL -> For each symbol: Decide -> Execute.
-    This new structure uses a "Cycle Cache" to prevent redundant API calls.
+    Main job flow: Fetch all multi-timeframe data -> Update PnL -> Check TP/SL -> For each symbol: Decide -> Execute.
     """
     global cycle_count, consecutive_error_cycles, last_cycle_errors
     cycle_count += 1
     
-    # Reload strategy every cycle to catch updates made by the strategist
     load_strategy()
     if not strategy_rules:
         print("[WORKER] Halting cycle because strategy rules are not loaded.")
@@ -159,16 +157,16 @@ def main_job():
     print(f"--- Strategy: {strategy_rules.get('strategy_name', 'N/A')} ---")
     print(f"{'='*66}")
 
-    # --- "CYCLE CACHE" DATA FETCH ---
-    # 1. Fetch market data for all symbols ONCE at the beginning of the cycle.
-    print("\n[STEP 1] Fetching market data for all symbols...")
+    # --- NEW "CYCLE CACHE" DATA FETCH (MULTI-TIMEFRAME) ---
+    print("\n[STEP 1] Fetching multi-timeframe data for all symbols...")
     market_data_cache = {}
     for symbol in config.TRADING_SYMBOLS:
-        summary = market.get_market_summary(symbol=symbol, interval='15m')
-        if summary:
-            market_data_cache[symbol] = summary
+        # Call the new function to get all timeframe data
+        multi_data = market.get_multi_timeframe_data(symbol=symbol, timeframes=config.TRADE_STRATEGY_TIMEFRAMES)
+        if multi_data:
+            market_data_cache[symbol] = multi_data
         else:
-            error_msg = f"[{symbol}] Could not get market summary, it will be skipped this cycle."
+            error_msg = f"[{symbol}] Could not get multi-timeframe data, it will be skipped this cycle."
             print(error_msg)
             cycle_errors.append(error_msg)
     
@@ -176,17 +174,36 @@ def main_job():
         print("[WORKER] Could not fetch market data for ANY symbol. Skipping cycle.")
         consecutive_error_cycles += 1
         last_cycle_errors = cycle_errors
-        return # Exit early if no data is available at all
-    
-    # 2. Update PnL for all open positions using the cached data
+        return
+
+    # --- ADAPTATION for functions expecting single summary ---
+    # Create a "summary_cache" from the entry timeframe for compatibility with PnL and TP/SL checks
+    summary_cache = {}
+    for symbol, multi_data in market_data_cache.items():
+        entry_df = multi_data.get(config.ENTRY_TIMEFRAME)
+        if entry_df is not None and not entry_df.empty:
+            last_candle = entry_df.iloc[-1]
+            summary_cache[symbol] = {
+                "symbol": symbol,
+                "current_price": last_candle['close'],
+                "ema_20": last_candle.get('EMA_20'),
+                "ema_50": last_candle.get('EMA_50'),
+                "ema_200": last_candle.get('EMA_200'),
+                "rsi_14": last_candle.get('RSI_14'),
+                "atr_14": last_candle.get('ATRr_14', 0.0),
+                "volume": last_candle.get('volume'),
+                "volume_sma_20": last_candle.get('volume_sma_20')
+            }
+
+    # 2. Update PnL for all open positions using the summary cache
     if config.SIMULATION_MODE and portfolio:
         print("\n[STEP 2] Updating open positions from cached market data...")
-        portfolio.update_open_positions(market_data_cache)
+        portfolio.update_open_positions(summary_cache)
         
     # 3. Check for TP/SL on existing positions
     if config.SIMULATION_MODE and portfolio:
         print("\n[STEP 3] Checking TP/SL triggers...")
-        check_tp_sl(market_data_cache, cycle_errors) # This function internally uses the updated portfolio state
+        check_tp_sl(summary_cache, cycle_errors)
 
     # 4. Get a fresh portfolio summary
     portfolio_summary = {}
@@ -195,45 +212,43 @@ def main_job():
         portfolio_summary = portfolio.get_portfolio_summary()
         print("[PF] Portfolio Summary:", json.dumps(portfolio_summary, indent=2))
 
-    # 5. For each symbol, run the main trading logic using cached data
+    # 5. For each symbol, run the main trading logic using the full multi-timeframe data
     print("\n[STEP 5] Processing trading symbols with RULE-BASED ENGINE...")
     for symbol in config.TRADING_SYMBOLS:
         try:
-            market_summary = market_data_cache.get(symbol)
-            if not market_summary:
-                # Already logged the error during fetch, just skip
+            multi_timeframe_data = market_data_cache.get(symbol)
+            if not multi_timeframe_data:
                 continue
 
             print(f"\n-> Processing {symbol}...")
             
-            # a. Get current position status
             position_status = trade.get_current_position(symbol=symbol)
             
-            # b. Check for and manage cooldown period
             cooldown_status = None
             if symbol in cooldown_manager:
                 cooldown_info = cooldown_manager[symbol]
                 if datetime.now() < cooldown_info["until"]:
-                    cooldown_status = cooldown_info # Pass the active cooldown info
+                    cooldown_status = cooldown_info
                     print(f"[{symbol}] Symbol is in cooldown for '{cooldown_status['direction']}' trades until {cooldown_info['until'].strftime('%H:%M:%S')}.")
                 else:
                     print(f"[{symbol}] Cooldown expired for '{cooldown_info['direction']}' trades.")
-                    del cooldown_manager[symbol] # Cleanup expired cooldown
+                    del cooldown_manager[symbol]
             
-            # c. Get trade decision from the RULE-BASED ENGINE
-            print(f"[{symbol}] Data (from cache): {json.dumps(market_summary)}")
+            # --- UPDATED ENGINE CALL ---
+            # Pass the full multi_timeframe_data to the new engine
             print(f"[{symbol}] Current Position: {position_status[0]}")
             decision = engine.decide_action(
                 strategy=strategy_rules,
-                market_data=market_summary, 
+                multi_timeframe_data=multi_timeframe_data, # <-- Pass the new data structure
                 position_status=position_status, 
                 portfolio_summary=portfolio_summary,
-                cooldown_status=cooldown_status # Pass cooldown status to engine
+                cooldown_status=cooldown_status
             )
             print(f"[{symbol}] Engine Decision: '{decision.get('command')}' | Reason: {decision.get('reasoning')}")
 
-            # d. Execute the decision, passing the cached data
-            trade.parse_and_execute(decision, symbol, market_summary, position_status)
+            # Execute the decision (the trade module still needs a single summary for logging/execution details)
+            # We use the summary_cache we created earlier
+            trade.parse_and_execute(decision, symbol, summary_cache.get(symbol), position_status)
             
         except Exception as e:
             error_msg = f"[{symbol}] An unexpected error occurred in the main loop: {e}"

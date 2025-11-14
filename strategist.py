@@ -5,7 +5,7 @@ import os
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 import config
-from market import get_broad_market_analysis # Gerçek analiz fonksiyonunu import et
+from market import get_multi_timeframe_data # Gerçek analiz fonksiyonunu import et
 
 
 # Gerekli import'ları dosyanın en üstüne ekle
@@ -176,37 +176,56 @@ def run_strategist_cycle():
     """
     print(f"\n--- Strategist Cycle Starting: {time.ctime()} ---")
 
-    # 1. Read current state (Bu kısım aynı)
+    # 1. Read current state
     current_strategy = read_current_strategy()
     if not current_strategy:
         return 
     trade_log = read_trade_log()
+    
+    # --- NEW: Fetch and process multi-timeframe data for the LLM ---
     market_analyses = []
+    print("[STRATEGIST] Fetching multi-timeframe market data for all symbols...")
     for symbol in config.TRADING_SYMBOLS:
-        analysis = get_broad_market_analysis(symbol, interval='15m')
-        if analysis:
-            market_analyses.append(analysis)
-    if not market_analyses:
-        print("[STRATEGIST] Could not get broad market analysis... Skipping.")
-        return
+        # Use the new function from market.py
+        multi_data = get_multi_timeframe_data(symbol, timeframes=config.TRADE_STRATEGY_TIMEFRAMES)
+        
+        if multi_data:
+            symbol_analysis = {"symbol": symbol, "timeframe_data": []}
+            for tf, df in multi_data.items():
+                if not df.empty:
+                    last_candle = df.iloc[-1]
+                    tf_summary = {
+                        "timeframe": tf,
+                        "current_price": last_candle['close'],
+                        "ema_20": last_candle.get('EMA_20'),
+                        "ema_50": last_candle.get('EMA_50'),
+                        "ema_200": last_candle.get('EMA_200'),
+                        "rsi_14": last_candle.get('RSI_14'),
+                        "volume": last_candle.get('volume')
+                    }
+                    symbol_analysis["timeframe_data"].append(tf_summary)
+            market_analyses.append(symbol_analysis)
 
-    # 2. Ask LLM for analysis (Burası DEĞİŞİYOR)
+    if not market_analyses:
+        print("[STRATEGIST] Could not get any market analysis... Skipping.")
+        return
+    # --- END NEW ---
+
+    # 2. Ask LLM for analysis
     try:
         llm = ChatOpenAI(
             model_name=config.LLM_MODEL_NAME,
             openai_api_key=config.OPENROUTER_API_KEY,
             openai_api_base="https://openrouter.ai/api/v1",
-            temperature=0.5, # Lower temperature for more deterministic and safer suggestions
+            temperature=0.5,
         )
 
-        # YENİ: LLM'i Pydantic şemamızla (StrategyConfig) zincirliyoruz
-        # Artık bu LLM, SADECE bu şemaya uygun cevap verebilir
         structured_llm = llm.with_structured_output(StrategyConfig)
 
         human_input_data = {
             "current_strategy": current_strategy,
             "recent_trade_log": trade_log,
-            "broader_market_analysis": market_analyses
+            "multi_timeframe_market_analysis": market_analyses # Changed key name for clarity
         }
         human_input = json.dumps(human_input_data, indent=2)
 
@@ -217,24 +236,10 @@ def run_strategist_cycle():
 
         print("[STRATEGIST] Asking LLM (with structured output) to suggest strategy...")
         
-        # YENİ: LLM'i çağırıyoruz. Dönen 'response' artık bir Pydantic objesi.
         response_pydantic_object = structured_llm.invoke(messages)
-
-        # --- ARTIK BU KISIMLARA GEREK YOK ---
-        # response = llm.invoke(messages)
-        # response_text = response.content.strip()
-        #
-        # if '```json' in response_text:
-        #     response_text = response_text.split('```json')[1].split('```')[0].strip()
-        #
-        # new_strategy_json = json.loads(response_text)
-        # -----------------------------------
-
-        # YENİ: Pydantic objesini Python dict'ine (JSON) çeviriyoruz
         new_strategy_json = response_pydantic_object.model_dump()
 
-
-        # 3. Validate and Update (Bu kısım eskisi gibi çalışmaya devam eder)
+        # 3. Validate and Update
         if json.dumps(new_strategy_json, sort_keys=True) == json.dumps(current_strategy, sort_keys=True):
             print("[STRATEGIST] LLM decided no changes are needed. Keeping current strategy.")
         elif validate_strategy(new_strategy_json):
@@ -242,13 +247,8 @@ def run_strategist_cycle():
         else:
             print("[STRATEGIST] New strategy from LLM failed validation. Discarding changes.")
 
-    except json.JSONDecodeError:
-        # Bu hata artık Pydantic tarafından yakalanacağı için pek olası değil,
-        # ama kalması da zarar vermez.
-        print(f"[STRATEGIST] ERROR: Could not decode JSON from LLM response.")
     except Exception as e:
         print(f"[STRATEGIST] An unexpected error occurred: {e}")
-        # Hatanın detaylarını görmek için traceback ekleyebilirsin
         import traceback
         traceback.print_exc()
 
