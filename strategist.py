@@ -182,7 +182,10 @@ def run_strategist_cycle():
         return 
     trade_log = read_trade_log()
     market_analyses = []
-    # ... (market analizini alma kodu aynı) ...
+    for symbol in config.TRADING_SYMBOLS:
+        analysis = get_broad_market_analysis(symbol)
+        if analysis:
+            market_analyses.append(analysis)
     if not market_analyses:
         print("[STRATEGIST] Could not get broad market analysis... Skipping.")
         return
