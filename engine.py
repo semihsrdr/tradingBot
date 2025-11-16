@@ -1,12 +1,33 @@
-import json
 
-def decide_action(strategy: dict, market_data: dict, position_status: tuple, portfolio_summary: dict, cooldown_status: bool = False) -> dict:
+DEFAULT_STRATEGY = {
+    "filters": {
+        "use_ema_trend_filter": True,
+        "use_rsi_pullback": True,
+        "no_trade_zone_pct": 0.005,
+        "use_volume_confirmation": True
+    },
+    "long_conditions": {
+        "rsi_exit_extreme": 75,
+        "rsi_entry_min": 30,
+        "rsi_entry_max": 50
+    },
+    "short_conditions": {
+        "rsi_exit_extreme": 25,
+        "rsi_entry_min": 50,
+        "rsi_entry_max": 70
+    },
+    "trade_parameters": {
+        "default_leverage": 20,
+        "trade_amount_pct_of_balance": 10
+    }
+}
+
+def decide_action(market_data: dict, position_status: tuple, portfolio_summary: dict, cooldown_status: bool = False) -> dict:
     """
-    Decides a trading action based on a set of rules from the strategy file.
+    Decides a trading action based on a hardcoded set of rules.
     This function is PURE Python and does not call any LLM.
 
     Args:
-        strategy: A dictionary containing the strategy rules from strategy.json.
         market_data: A dictionary with the latest market data (price, indicators).
         position_status: A tuple of ('side', quantity).
         portfolio_summary: A dictionary with portfolio details (balance, etc.).
@@ -15,6 +36,7 @@ def decide_action(strategy: dict, market_data: dict, position_status: tuple, por
     Returns:
         A decision dictionary (e.g., {"command": "long 20x", "reasoning": "...", "trade_amount_usd": 100}).
     """
+    strategy = DEFAULT_STRATEGY
     # --- Unpack data for easier access ---
     current_price = market_data.get('current_price', 0)
     ema_200 = market_data.get('ema_200', 0)

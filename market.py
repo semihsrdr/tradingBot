@@ -37,10 +37,8 @@ def get_market_summary(symbol=config.TRADING_SYMBOLS[0], interval='3m', limit=25
             df['ADX_14'] = 25 # Default neutral value
 
         # Bollinger Bands for squeeze detection
-        bbands = df.ta.bbands(length=20, std=2)
-        if bbands is not None and not bbands.empty:
-            df['BBL_20_2.0'] = bbands['BBL_20_2.0']
-            df['BBU_20_2.0'] = bbands['BBU_20_2.0']
+        df.ta.bbands(length=20, std=2, append=True)
+        if 'BBL_20_2.0' in df.columns and 'BBU_20_2.0' in df.columns:
             # Calculate Bandwidth
             df['BBW_20_2.0'] = (df['BBU_20_2.0'] - df['BBL_20_2.0']) / df['close']
         else:
@@ -79,7 +77,7 @@ def get_market_summary(symbol=config.TRADING_SYMBOLS[0], interval='3m', limit=25
             "market_trend": trend,
             "adx_14": round(last_candle.get('ADX_14', 25), 2),
             "bollinger_bandwidth": round(last_candle.get('BBW_20_2.0', 0), 5),
-            "is_in_bollinger_squeeze": is_in_squeeze
+            "is_in_bollinger_squeeze": bool(is_in_squeeze)
         }
         
         return summary
@@ -90,56 +88,6 @@ def get_market_summary(symbol=config.TRADING_SYMBOLS[0], interval='3m', limit=25
         traceback.print_exc()
         return None
 
-def get_broad_market_analysis(symbol=config.TRADING_SYMBOLS[0], interval='3m', limit=480):
-    """
-    Fetches a larger dataset of candles (e.g., last 24h) to analyze the broader market context.
-    Calculates ADX for trend strength and overall volatility.
-    This is used by the Strategist LLM.
-    """
-    try:
-        client = get_client()
-        ohlcv = client.fetch_ohlcv(symbol, timeframe=interval, limit=limit)
-        
-        columns = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
-        df = pd.DataFrame(ohlcv, columns=columns)
-        
-        for col in ['open', 'high', 'low', 'close', 'volume']:
-            df[col] = pd.to_numeric(df[col])
-
-        # Calculate ADX for trend strength
-        adx_indicator = df.ta.adx(length=14)
-        if adx_indicator is not None and not adx_indicator.empty:
-            df['ADX_14'] = adx_indicator.iloc[:, 0] # ADX is the first column
-        else:
-            df['ADX_14'] = 25 # Default neutral value
-
-        # Calculate overall volatility (e.g., ATR as a percentage of price)
-        df.ta.atr(length=14, append=True)
-        
-        last_candle = df.iloc[-1]
-        current_price = last_candle['close']
-        
-        atr_value = last_candle.get('ATRr_14', 0)
-        atr_pct = (atr_value / current_price) * 100 if current_price > 0 else 0
-        
-        adx_value = last_candle.get('ADX_14', 25)
-        
-        market_condition = "Trending" if adx_value > 25 else "Choppy/Ranging"
-
-        analysis = {
-            "symbol": symbol,
-            "timeframe": f"{limit * int(interval.replace('m', '')) / 60:.1f} hours",
-            "market_condition": market_condition,
-            "trend_strength_adx_14": round(adx_value, 2),
-            "volatility_atr_pct": round(atr_pct, 4)
-        }
-        return analysis
-
-    except Exception as e:
-        print(f"Error getting broad market analysis for {symbol}: {e}")
-        return None
-
-
 # You can test this file directly
 if __name__ == "__main__":
     # Test with the first symbol from the config
@@ -149,8 +97,3 @@ if __name__ == "__main__":
     summary = get_market_summary(symbol=test_symbol)
     if summary:
         print(json.dumps(summary, indent=2))
-
-    print("\n--- Testing get_broad_market_analysis (for Strategist) ---")
-    broad_analysis = get_broad_market_analysis(symbol=test_symbol)
-    if broad_analysis:
-        print(json.dumps(broad_analysis, indent=2))

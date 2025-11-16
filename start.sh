@@ -41,10 +41,6 @@ gunicorn app:app --bind 0.0.0.0:${PORT:-3000} 2>&1 | while IFS= read -r line; do
 echo "Starting worker process in the background..."
 python3 -u worker.py 2>&1 | while IFS= read -r line; do echo "[$(date '+%Y-%m-%d %H:%M:%S')] $line"; done >> "$LOG_FILE" &
 
-# Start the strategist process in the background
-# Output is piped through a while-read loop to prepend a timestamp to each line.
-echo "Starting strategist process in the background..."
-python3 -u strategist.py 2>&1 | while IFS= read -r line; do echo "[$(date '+%Y-%m-%d %H:%M:%S')] $line"; done >> "$LOG_FILE" &
 
 # Wait for all background jobs to complete.
 # The script will pause here. When it receives a signal (like from Coolify's

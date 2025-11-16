@@ -14,7 +14,8 @@ import trade
 portfolio = None
 if config.SIMULATION_MODE:
     from simulation import SimulatedPortfolio
-    portfolio = SimulatedPortfolio()
+    cooldown_manager = {}
+    portfolio = SimulatedPortfolio(cooldown_manager)
     # Şimdi portfolio'yu trade modülüne set et
     trade.set_portfolio(portfolio)
     print(f"[INIT] Portfolio initialized and shared with trade module.")

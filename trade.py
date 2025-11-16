@@ -135,7 +135,8 @@ if __name__ == "__main__":
     print("\n--- Trade Modülü Testleri ---")
     if config.SIMULATION_MODE:
         from simulation import SimulatedPortfolio
-        test_portfolio = SimulatedPortfolio()
+        cooldown_manager = {}
+        test_portfolio = SimulatedPortfolio(cooldown_manager)
         set_portfolio(test_portfolio)
     
     test_decision = {

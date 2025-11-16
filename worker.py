@@ -12,9 +12,7 @@ import mailer # Import the new mailer module
 cycle_count = 0
 consecutive_error_cycles = 0
 last_cycle_errors = []
-strategy_rules = {}
 cooldown_manager = {} # Manages cooldown periods for symbols
-# --- End State Management ---
 
 # ÖNCE trade modülünü import et
 import trade
@@ -29,126 +27,18 @@ if config.SIMULATION_MODE:
     trade.set_portfolio(portfolio)
     print(f"[INIT] Portfolio initialized and shared with trade module and cooldown manager.")
 
-def check_tp_sl(market_data_cache: dict, cycle_errors: list):
-    """
-    Checks open positions and closes them if TP, Trailing SL, or
-    static SL levels are hit. Cooldown is now handled by the portfolio.
-    """
-    if not config.SIMULATION_MODE:
-        print("TP/SL check is currently only supported in simulation mode.")
-        return
-
-    open_positions = portfolio.get_all_open_positions()
-    if not open_positions:
-        return
-
-    print("\n[MGM] Checking open positions for TP/SL...")
-    for symbol, position in list(open_positions.items()):
-        try:
-            market_summary = market_data_cache.get(symbol)
-            if not market_summary:
-                print(f"[{symbol}] No market data in cache for TP/SL check. Skipping.")
-                continue
-
-            position_status = portfolio.get_position_details(symbol)
-            margin = position.get('margin', 0)
-            unrealized_pnl = position.get('unrealized_pnl', 0)
-            entry_price = position.get('entry_price', 0)
-            current_price = position.get('current_price', 0)
-            atr_at_entry = position.get('atr_at_entry', 0)
-            side = position.get('side')
-            highest_pnl_pct = position.get('highest_pnl_pct', 0.0)
-
-            if margin == 0 or entry_price == 0:
-                continue
-
-            pnl_pct = (unrealized_pnl / margin) * 100
-
-            # --- TAKE PROFIT CHECK ---
-            if pnl_pct >= config.TAKE_PROFIT_PCT:
-                reason = f"TAKE PROFIT triggered at {pnl_pct:.2f}%"
-                print(f"✅ [{symbol}] {reason}")
-                trade.parse_and_execute({"command": "close", "reasoning": reason}, symbol, market_summary, position_status)
-                continue
-
-            # --- TRAILING STOP LOSS CHECK ---
-            trailing_sl_active = False
-            if config.ENABLE_TRAILING_STOP and highest_pnl_pct >= config.TRAILING_STOP_TRIGGER_PCT:
-                trailing_sl_active = True
-                trailing_stop_level_pct = highest_pnl_pct - config.TRAILING_STOP_DISTANCE_PCT
-                print(f"[{symbol}] PnL: {pnl_pct:.2f}% | Highest: {highest_pnl_pct:.2f}% | Trailing SL: < {trailing_stop_level_pct:.2f}%")
-                if pnl_pct <= trailing_stop_level_pct:
-                    reason = f"TRAILING STOP LOSS triggered at {pnl_pct:.2f}%. (Highest: {highest_pnl_pct:.2f}%)"
-                    print(f"❌ [{symbol}] {reason}")
-                    trade.parse_and_execute({"command": "close", "reasoning": reason}, symbol, market_summary, position_status)
-                    continue # Cooldown is handled in _close_position
-            
-            # --- STATIC STOP LOSS CHECK (if TSL is not active) ---
-            if not trailing_sl_active:
-                reason = None
-                # DYNAMIC (ATR) STOP LOSS
-                if atr_at_entry > 0:
-                    stop_loss_price = 0
-                    if side in ['long', 'buy']:
-                        stop_loss_price = entry_price - (atr_at_entry * config.ATR_MULTIPLIER)
-                        print(f"[{symbol}] PnL: {pnl_pct:.2f}% | Current: {current_price} | Static SL: < {stop_loss_price:.4f}")
-                        if current_price <= stop_loss_price:
-                            reason = f"DYNAMIC (ATR) STOP LOSS triggered at {current_price:.4f}"
-                    elif side in ['short', 'sell']:
-                        stop_loss_price = entry_price + (atr_at_entry * config.ATR_MULTIPLIER)
-                        print(f"[{symbol}] PnL: {pnl_pct:.2f}% | Current: {current_price} | Static SL: > {stop_loss_price:.4f}")
-                        if current_price >= stop_loss_price:
-                            reason = f"DYNAMIC (ATR) STOP LOSS triggered at {current_price:.4f}"
-                # FALLBACK (Percentage) STOP LOSS
-                else:
-                    print(f"[{symbol}] PnL: {pnl_pct:.2f}% | (Fallback SL: < {-config.STOP_LOSS_PCT}%)")
-                    if pnl_pct <= -config.STOP_LOSS_PCT:
-                        reason = f"FALLBACK STOP LOSS triggered at {pnl_pct:.2f}%"
-                
-                if reason:
-                    print(f"❌ [{symbol}] {reason}")
-                    trade.parse_and_execute({"command": "close", "reasoning": reason}, symbol, market_summary, position_status)
-                    continue # Cooldown is handled in _close_position
-
-        except Exception as e:
-            error_msg = f"[{symbol}] Error during TP/SL check: {e}"
-            print(error_msg)
-            cycle_errors.append(error_msg)
-            import traceback
-            traceback.print_exc()
-
-# --- GÜNCELLENEN FONKSİYONUN SONU ---
-
-def load_strategy():
-    """Loads strategy rules from strategy.json."""
-    global strategy_rules
-    try:
-        with open('strategy.json', 'r') as f:
-            strategy_rules = json.load(f)
-        print("[INIT] Strategy rules loaded from strategy.json")
-    except Exception as e:
-        print(f"[CRITICAL] Could not load strategy.json: {e}. Bot will not run.")
-        strategy_rules = {} # Reset to prevent running with old/bad config
-
 def main_job():
     """
-    Main job flow: Fetch all data once -> Update PnL -> Check TP/SL -> For each symbol: Decide -> Execute.
+    Main job flow: Fetch all data once -> Update PnL -> For each symbol: Decide -> Execute.
     This new structure uses a "Cycle Cache" to prevent redundant API calls.
     """
     global cycle_count, consecutive_error_cycles, last_cycle_errors
     cycle_count += 1
     
-    # Reload strategy every cycle to catch updates made by the strategist
-    load_strategy()
-    if not strategy_rules:
-        print("[WORKER] Halting cycle because strategy rules are not loaded.")
-        return
-
     cycle_errors = []
 
     print(f"\n{'='*60}")
     print(f"--- Cycle Start: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} (Cycle #{cycle_count}) ---")
-    print(f"--- Strategy: {strategy_rules.get('strategy_name', 'N/A')} ---")
     print(f"{'='*66}")
 
     # --- "CYCLE CACHE" DATA FETCH ---
@@ -174,21 +64,16 @@ def main_job():
     if config.SIMULATION_MODE and portfolio:
         print("\n[STEP 2] Updating open positions from cached market data...")
         portfolio.update_open_positions(market_data_cache)
-        
-    # 3. Check for TP/SL on existing positions
-    if config.SIMULATION_MODE and portfolio:
-        print("\n[STEP 3] Checking TP/SL triggers...")
-        check_tp_sl(market_data_cache, cycle_errors) # This function internally uses the updated portfolio state
 
-    # 4. Get a fresh portfolio summary
+    # 3. Get a fresh portfolio summary
     portfolio_summary = {}
     if config.SIMULATION_MODE and portfolio:
-        print("\n[STEP 4] Getting portfolio summary...")
+        print("\n[STEP 3] Getting portfolio summary...")
         portfolio_summary = portfolio.get_portfolio_summary()
         print("[PF] Portfolio Summary:", json.dumps(portfolio_summary, indent=2))
 
-    # 5. For each symbol, run the main trading logic using cached data
-    print("\n[STEP 5] Processing trading symbols with RULE-BASED ENGINE...")
+    # 4. For each symbol, run the main trading logic using cached data
+    print("\n[STEP 4] Processing trading symbols with RULE-BASED ENGINE...")
     for symbol in config.TRADING_SYMBOLS:
         try:
             market_summary = market_data_cache.get(symbol)
@@ -216,7 +101,6 @@ def main_job():
             print(f"[{symbol}] Data (from cache): {json.dumps(market_summary)}")
             print(f"[{symbol}] Current Position: {position_status[0]}")
             decision = engine.decide_action(
-                strategy=strategy_rules,
                 market_data=market_summary, 
                 position_status=position_status, 
                 portfolio_summary=portfolio_summary,
@@ -234,9 +118,9 @@ def main_job():
             traceback.print_exc()
             cycle_errors.append(error_msg)
     
-    # 6. Save state to file for web UI
+    # 5. Save state to file for web UI
     if config.SIMULATION_MODE and portfolio:
-        print("\n[STEP 6] Saving state to portfolio_state.json for web UI...")
+        print("\n[STEP 5] Saving state to portfolio_state.json for web UI...")
         try:
             state_data = {
                 "portfolio_summary": portfolio.get_portfolio_summary(),
@@ -248,7 +132,7 @@ def main_job():
         except Exception as e:
             print(f"Error saving state to file: {e}")
 
-    # 7. Handle Error and Summary Email Logic
+    # 6. Handle Error and Summary Email Logic
     if cycle_errors:
         consecutive_error_cycles += 1
         last_cycle_errors.extend(cycle_errors)
@@ -278,7 +162,7 @@ def main_job():
 
 print("--- RULE-BASED Scalping Bot Initialized ---")
 print(f"Trading Assets: {', '.join(config.TRADING_SYMBOLS)}")
-print(f"Engine: Running based on rules from 'strategy.json'")
+print(f"Engine: Running with hardcoded strategy rules.")
 # YENİ: Başlangıç log mesajına TSL bilgisini ekleyelim
 print(f"Strategy: TP: {config.TAKE_PROFIT_PCT}% / Static SL (ATR): {config.ATR_MULTIPLIER}x")
 print(f"Trailing SL: {'Active' if config.ENABLE_TRAILING_STOP else 'Inactive'}")
@@ -288,19 +172,13 @@ print(f"Simulation Mode: {'Active' if config.SIMULATION_MODE else 'Inactive'}")
 print(f"Run Interval: Every 1 minute (analyzing 3m candles)")
 print("------------------------------------")
 
-# Load strategy rules at startup
-load_strategy()
-
 print("\n[WORKER] Starting trading bot worker...")
 
 # Schedule the main job to run every 1 minute
 schedule.every(1).minutes.do(main_job)
 
 # Run the job once immediately to start
-if strategy_rules:
-    main_job()
-else:
-    print("[WORKER] Bot not started due to missing strategy rules.")
+main_job()
 
 
 # Main loop for the scheduler
