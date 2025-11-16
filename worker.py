@@ -8,6 +8,14 @@ from datetime import datetime, timedelta
 import trade_logger
 import mailer # Import the new mailer module
 
+# --- State Management ---
+cycle_count = 0
+consecutive_error_cycles = 0
+last_cycle_errors = []
+strategy_rules = {}
+cooldown_manager = {} # Manages cooldown periods for symbols
+# --- End State Management ---
+
 # ÖNCE trade modülünü import et
 import trade
 
@@ -15,16 +23,16 @@ import trade
 portfolio = None
 if config.SIMULATION_MODE:
     from simulation import SimulatedPortfolio
-    portfolio = SimulatedPortfolio()
+    # Pass the cooldown manager to the portfolio
+    portfolio = SimulatedPortfolio(cooldown_manager)
     # Şimdi portfolio'yu trade modülüne set et
     trade.set_portfolio(portfolio)
-    print(f"[INIT] Portfolio initialized and shared with trade module.")
+    print(f"[INIT] Portfolio initialized and shared with trade module and cooldown manager.")
 
-# --- YENİ GÜNCELLENMİŞ FONKSİYON ---
 def check_tp_sl(market_data_cache: dict, cycle_errors: list):
     """
     Checks open positions and closes them if TP, Trailing SL, or
-    static SL levels are hit. Also initiates a cooldown period on SL.
+    static SL levels are hit. Cooldown is now handled by the portfolio.
     """
     if not config.SIMULATION_MODE:
         print("TP/SL check is currently only supported in simulation mode.")
@@ -73,11 +81,7 @@ def check_tp_sl(market_data_cache: dict, cycle_errors: list):
                     reason = f"TRAILING STOP LOSS triggered at {pnl_pct:.2f}%. (Highest: {highest_pnl_pct:.2f}%)"
                     print(f"❌ [{symbol}] {reason}")
                     trade.parse_and_execute({"command": "close", "reasoning": reason}, symbol, market_summary, position_status)
-                    # INITIATE COOLDOWN
-                    cooldown_until = datetime.now() + timedelta(minutes=config.COOLDOWN_PERIOD_MINUTES)
-                    cooldown_manager[symbol] = {"direction": side, "until": cooldown_until}
-                    print(f"[{symbol}] COOLDOWN INITIATED for {side.upper()} trades until {cooldown_until.strftime('%H:%M:%S')}.")
-                    continue
+                    continue # Cooldown is handled in _close_position
             
             # --- STATIC STOP LOSS CHECK (if TSL is not active) ---
             if not trailing_sl_active:
@@ -104,11 +108,7 @@ def check_tp_sl(market_data_cache: dict, cycle_errors: list):
                 if reason:
                     print(f"❌ [{symbol}] {reason}")
                     trade.parse_and_execute({"command": "close", "reasoning": reason}, symbol, market_summary, position_status)
-                    # INITIATE COOLDOWN
-                    cooldown_until = datetime.now() + timedelta(minutes=config.COOLDOWN_PERIOD_MINUTES)
-                    cooldown_manager[symbol] = {"direction": side, "until": cooldown_until}
-                    print(f"[{symbol}] COOLDOWN INITIATED for {side.upper()} trades until {cooldown_until.strftime('%H:%M:%S')}.")
-                    continue
+                    continue # Cooldown is handled in _close_position
 
         except Exception as e:
             error_msg = f"[{symbol}] Error during TP/SL check: {e}"
@@ -116,16 +116,8 @@ def check_tp_sl(market_data_cache: dict, cycle_errors: list):
             cycle_errors.append(error_msg)
             import traceback
             traceback.print_exc()
+
 # --- GÜNCELLENEN FONKSİYONUN SONU ---
-
-
-# --- State Management ---
-cycle_count = 0
-consecutive_error_cycles = 0
-last_cycle_errors = []
-strategy_rules = {}
-cooldown_manager = {}
-# --- End State Management ---
 
 def load_strategy():
     """Loads strategy rules from strategy.json."""

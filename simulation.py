@@ -1,7 +1,7 @@
 import config
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from market import get_market_summary # To get prices
 from trade_logger import log_trade # Import the logger
 
@@ -12,10 +12,11 @@ class SimulatedPortfolio:
     Manages a virtual portfolio, tracking leveraged positions, balance,
     and PnL across multiple symbols, with state persistence.
     """
-    def __init__(self):
+    def __init__(self, cooldown_manager: dict):
         self.balance = config.SIMULATION_STARTING_BALANCE
         self.positions = {}
         self.equity_history = []
+        self.cooldown_manager = cooldown_manager # Store the reference to the worker's cooldown manager
         self._load_state()
 
     def _load_state(self):
@@ -165,6 +166,14 @@ class SimulatedPortfolio:
         
         print(f"[SIM] POSITION CLOSED: {symbol}, Exit: {price}, PnL: {pnl:.4f}, Margin Ret: {margin_returned:.2f}, New Balance: {self.balance:.2f}")
         
+        # --- COOLDOWN LOGIC ---
+        # If the trade was a loss, put the symbol on cooldown.
+        if pnl < 0:
+            cooldown_until = datetime.now() + timedelta(minutes=config.COOLDOWN_PERIOD_MINUTES)
+            self.cooldown_manager[symbol] = {"until": cooldown_until}
+            print(f"🧊 [{symbol}] COOLDOWN INITIATED on loss. No new trades until {cooldown_until.strftime('%H:%M:%S')}.")
+        # --- END COOLDOWN LOGIC ---
+
         # Log the closing trade
         pnl_pct = (pnl / position['margin']) * 100 if position['margin'] > 0 else 0
         log_data = {

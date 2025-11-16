@@ -1,6 +1,6 @@
 import json
 
-def decide_action(strategy: dict, market_data: dict, position_status: tuple, portfolio_summary: dict, cooldown_status: dict = None) -> dict:
+def decide_action(strategy: dict, market_data: dict, position_status: tuple, portfolio_summary: dict, cooldown_status: bool = False) -> dict:
     """
     Decides a trading action based on a set of rules from the strategy file.
     This function is PURE Python and does not call any LLM.
@@ -10,18 +10,22 @@ def decide_action(strategy: dict, market_data: dict, position_status: tuple, por
         market_data: A dictionary with the latest market data (price, indicators).
         position_status: A tuple of ('side', quantity).
         portfolio_summary: A dictionary with portfolio details (balance, etc.).
-        cooldown_status: A dict indicating if a symbol is on cooldown for a direction.
+        cooldown_status: A boolean indicating if the symbol is on cooldown.
 
     Returns:
         A decision dictionary (e.g., {"command": "long 20x", "reasoning": "...", "trade_amount_usd": 100}).
     """
-    # Unpack data for easier access
+    # --- Unpack data for easier access ---
     current_price = market_data.get('current_price', 0)
     ema_200 = market_data.get('ema_200', 0)
     rsi = market_data.get('rsi_14', 50)
     volume = market_data.get('volume', 0)
     volume_sma = market_data.get('volume_sma_20', 0)
     position_side, position_qty = position_status
+    
+    # New market regime filter data
+    adx = market_data.get('adx_14', 25)
+    is_in_squeeze = market_data.get('is_in_bollinger_squeeze', False)
 
     # Unpack strategy rules
     filters = strategy.get('filters', {})
@@ -50,20 +54,22 @@ def decide_action(strategy: dict, market_data: dict, position_status: tuple, por
 
     # --- From here, we are 'flat' and looking for an entry ---
 
-    # --- NEW RULE: Cooldown Filter ---
-    # This check is performed only when we are 'flat'.
+    # --- MASTER FILTER 1: COOLDOWN FILTER ---
     if cooldown_status:
-        # Determine potential trade direction based on trend
-        potential_direction = None
-        if current_price > ema_200:
-            potential_direction = 'long'
-        elif current_price < ema_200:
-            potential_direction = 'short'
-        
-        if potential_direction and potential_direction == cooldown_status.get('direction'):
-            return {"command": "hold", "reasoning": f"Cooldown active for {potential_direction.upper()} trades after a recent stop-loss.", "trade_amount_usd": 0}
+        return {"command": "hold", "reasoning": "Cooldown active for symbol after a recent loss. No new trades.", "trade_amount_usd": 0}
 
-    # --- RULE 1: Trend Filter ---
+    # --- MASTER FILTER 2: "SAWTOOTH" / CHOP MARKET FILTER (DO NOT OPEN TRADES) ---
+    if adx < 20:
+        return {"command": "hold", "reasoning": f"Market is choppy (ADX is {adx:.1f} < 20). No new trades.", "trade_amount_usd": 0}
+    if is_in_squeeze:
+        return {"command": "hold", "reasoning": "Volatility is too low (Bollinger Squeeze detected). No new trades.", "trade_amount_usd": 0}
+
+    # --- MASTER FILTER 3: TREND CONFIRMATION (OK TO LOOK FOR TRADES) ---
+    if adx < 25: # User requested ADX > 25 to open trades
+        return {"command": "hold", "reasoning": f"Waiting for stronger trend confirmation (ADX is {adx:.1f} < 25).", "trade_amount_usd": 0}
+    # Note: The `is_in_squeeze` check is already handled by the filter above. If we reach here, there is no squeeze.
+
+    # --- RULE 1: EMA Trend Filter ---
     if filters.get('use_ema_trend_filter'):
         is_bullish = current_price > ema_200
         is_bearish = current_price < ema_200
@@ -101,11 +107,11 @@ def decide_action(strategy: dict, market_data: dict, position_status: tuple, por
     trade_amount = balance * (trade_pct / 100)
 
     if is_bullish:
-        reason = f"All conditions met for LONG: Bullish trend, RSI pullback ({rsi:.1f}), and Volume confirmation."
+        reason = f"All conditions met for LONG: Trend confirmed (ADX > 25), EMA bullish, RSI pullback ({rsi:.1f}), and Volume confirmation."
         return {"command": f"long {leverage}x", "reasoning": reason, "trade_amount_usd": trade_amount}
     
     if is_bearish:
-        reason = f"All conditions met for SHORT: Bearish trend, RSI pullback ({rsi:.1f}), and Volume confirmation."
+        reason = f"All conditions met for SHORT: Trend confirmed (ADX > 25), EMA bearish, RSI pullback ({rsi:.1f}), and Volume confirmation."
         return {"command": f"short {leverage}x", "reasoning": reason, "trade_amount_usd": trade_amount}
 
     # Default case if something goes wrong
