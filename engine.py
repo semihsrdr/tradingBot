@@ -26,7 +26,7 @@ DEFAULT_STRATEGY = {
 }
 
 
-def decide_action(market_data: dict, position_status: tuple, portfolio_summary: dict, cooldown_status: bool = False) -> dict:
+def decide_action(market_data: dict, position_status: tuple, portfolio_summary: dict, cooldown_status: dict = None) -> dict:
     """
     Decides a trading action based on a hybrid strategy:
     1. In Ranging Markets (ADX < threshold): Uses a trend-aligned Mean Reversion strategy.
@@ -36,7 +36,7 @@ def decide_action(market_data: dict, position_status: tuple, portfolio_summary: 
         market_data: A dictionary with the latest market data (price, indicators).
         position_status: A tuple of ('side', quantity).
         portfolio_summary: A dictionary with portfolio details (balance, etc.).
-        cooldown_status: A boolean indicating if the symbol is on cooldown.
+        cooldown_status: A dictionary indicating if the symbol is on cooldown, contains 'direction' and 'until'.
 
     Returns:
         A decision dictionary (e.g., {"command": "long 20x", "reasoning": "...", "trade_amount_usd": 100}).
@@ -81,7 +81,8 @@ def decide_action(market_data: dict, position_status: tuple, portfolio_summary: 
 
     # --- MASTER FILTER: COOLDOWN ---
     if cooldown_status:
-        return {"command": "hold", "reasoning": "Cooldown active after a recent loss.", "trade_amount_usd": 0}
+        direction = cooldown_status.get('direction', 'any')
+        return {"command": "hold", "reasoning": f"Cooldown active for '{direction}' trades after a recent loss.", "trade_amount_usd": 0}
 
     # --- HYBRID STRATEGY LOGIC ---
     

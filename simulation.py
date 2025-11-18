@@ -170,8 +170,11 @@ class SimulatedPortfolio:
         # If the trade was a loss, put the symbol on cooldown.
         if pnl < 0:
             cooldown_until = datetime.now() + timedelta(minutes=config.COOLDOWN_PERIOD_MINUTES)
-            self.cooldown_manager[symbol] = {"until": cooldown_until}
-            print(f"🧊 [{symbol}] COOLDOWN INITIATED on loss. No new trades until {cooldown_until.strftime('%H:%M:%S')}.")
+            self.cooldown_manager[symbol] = {
+                "until": cooldown_until,
+                "direction": position['side']  # Add the direction of the losing trade
+            }
+            print(f"🧊 [{symbol}] COOLDOWN INITIATED on loss for '{position['side']}' trade. No new trades until {cooldown_until.strftime('%H:%M:%S')}.")
         # --- END COOLDOWN LOGIC ---
 
         # Log the closing trade
