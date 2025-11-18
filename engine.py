@@ -1,9 +1,12 @@
+from config import ADX_TREND_THRESHOLD, ADX_RANGE_THRESHOLD
 
+# The DEFAULT_STRATEGY dictionary is no longer the primary driver of the main logic,
+# but it can be kept for specific parameters like RSI levels if needed, or removed if fully replaced.
+# For this implementation, we will use its values but the core logic is in decide_action.
 DEFAULT_STRATEGY = {
     "filters": {
         "use_ema_trend_filter": True,
         "use_rsi_pullback": True,
-        "no_trade_zone_pct": 0.005,
         "use_volume_confirmation": True
     },
     "long_conditions": {
@@ -22,10 +25,12 @@ DEFAULT_STRATEGY = {
     }
 }
 
+
 def decide_action(market_data: dict, position_status: tuple, portfolio_summary: dict, cooldown_status: bool = False) -> dict:
     """
-    Decides a trading action based on a hardcoded set of rules.
-    This function is PURE Python and does not call any LLM.
+    Decides a trading action based on a hybrid strategy:
+    1. In Ranging Markets (ADX < threshold): Uses a trend-aligned Mean Reversion strategy.
+    2. In Trending Markets (ADX > threshold): Uses a trend-following Pullback strategy.
 
     Args:
         market_data: A dictionary with the latest market data (price, indicators).
@@ -36,20 +41,19 @@ def decide_action(market_data: dict, position_status: tuple, portfolio_summary: 
     Returns:
         A decision dictionary (e.g., {"command": "long 20x", "reasoning": "...", "trade_amount_usd": 100}).
     """
-    strategy = DEFAULT_STRATEGY
     # --- Unpack data for easier access ---
     current_price = market_data.get('current_price', 0)
     ema_200 = market_data.get('ema_200', 0)
     rsi = market_data.get('rsi_14', 50)
+    adx = market_data.get('adx_14', 25)
+    lower_band = market_data.get('bollinger_lower', 0)
+    upper_band = market_data.get('bollinger_upper', 0)
     volume = market_data.get('volume', 0)
     volume_sma = market_data.get('volume_sma_20', 0)
-    position_side, position_qty = position_status
-    
-    # New market regime filter data
-    adx = market_data.get('adx_14', 25)
-    is_in_squeeze = market_data.get('is_in_bollinger_squeeze', False)
+    position_side, _ = position_status
 
-    # Unpack strategy rules
+    # Unpack strategy rules from the dictionary
+    strategy = DEFAULT_STRATEGY
     filters = strategy.get('filters', {})
     long_cond = strategy.get('long_conditions', {})
     short_cond = strategy.get('short_conditions', {})
@@ -57,84 +61,89 @@ def decide_action(market_data: dict, position_status: tuple, portfolio_summary: 
 
     # --- RULE 0: If we are in a position, only decide between 'hold' or 'close' ---
     if position_side != 'flat':
-        reason = f"Holding existing {position_side} position."
-        # Trend Reversal Check
+        # Trend Reversal Check (Price crossing EMA200)
         if filters.get('use_ema_trend_filter'):
             if position_side in ['long', 'buy'] and current_price < ema_200:
-                return {"command": "close", "reasoning": "Closing long position: Trend reversed (price crossed below EMA200).", "trade_amount_usd": 0}
+                return {"command": "close", "reasoning": "Closing long: Trend reversed (price < EMA200).", "trade_amount_usd": 0}
             if position_side in ['short', 'sell'] and current_price > ema_200:
-                return {"command": "close", "reasoning": "Closing short position: Trend reversed (price crossed above EMA200).", "trade_amount_usd": 0}
+                return {"command": "close", "reasoning": "Closing short: Trend reversed (price > EMA200).", "trade_amount_usd": 0}
         
-        # RSI Extreme Check
+        # RSI Extreme Check (Exit on overbought/oversold)
         if filters.get('use_rsi_pullback'):
             if position_side in ['long', 'buy'] and rsi > long_cond.get('rsi_exit_extreme', 75):
-                return {"command": "close", "reasoning": f"Closing long position: RSI is overbought ({rsi:.1f} > {long_cond.get('rsi_exit_extreme', 75)}).", "trade_amount_usd": 0}
+                return {"command": "close", "reasoning": f"Closing long: RSI overbought ({rsi:.1f}).", "trade_amount_usd": 0}
             if position_side in ['short', 'sell'] and rsi < short_cond.get('rsi_exit_extreme', 25):
-                return {"command": "close", "reasoning": f"Closing short position: RSI is oversold ({rsi:.1f} < {short_cond.get('rsi_exit_extreme', 25)}).", "trade_amount_usd": 0}
+                return {"command": "close", "reasoning": f"Closing short: RSI oversold ({rsi:.1f}).", "trade_amount_usd": 0}
 
-        return {"command": "hold", "reasoning": reason, "trade_amount_usd": 0}
+        return {"command": "hold", "reasoning": f"Holding existing {position_side} position.", "trade_amount_usd": 0}
 
     # --- From here, we are 'flat' and looking for an entry ---
 
-    # --- MASTER FILTER 1: COOLDOWN FILTER ---
+    # --- MASTER FILTER: COOLDOWN ---
     if cooldown_status:
-        return {"command": "hold", "reasoning": "Cooldown active for symbol after a recent loss. No new trades.", "trade_amount_usd": 0}
+        return {"command": "hold", "reasoning": "Cooldown active after a recent loss.", "trade_amount_usd": 0}
 
-    # --- MASTER FILTER 2: "SAWTOOTH" / CHOP MARKET FILTER (DO NOT OPEN TRADES) ---
-    if adx < 20:
-        return {"command": "hold", "reasoning": f"Market is choppy (ADX is {adx:.1f} < 20). No new trades.", "trade_amount_usd": 0}
-    if is_in_squeeze:
-        return {"command": "hold", "reasoning": "Volatility is too low (Bollinger Squeeze detected). No new trades.", "trade_amount_usd": 0}
+    # --- HYBRID STRATEGY LOGIC ---
+    
+    # --- STRATEGY 1: RANGING MARKET - MEAN REVERSION (ADX is low) ---
+    if adx < ADX_RANGE_THRESHOLD:
+        is_bullish_trend = current_price > ema_200
+        is_bearish_trend = current_price < ema_200
 
-    # --- MASTER FILTER 3: TREND CONFIRMATION (OK TO LOOK FOR TRADES) ---
-    if adx < 25: # User requested ADX > 25 to open trades
-        return {"command": "hold", "reasoning": f"Waiting for stronger trend confirmation (ADX is {adx:.1f} < 25).", "trade_amount_usd": 0}
-    # Note: The `is_in_squeeze` check is already handled by the filter above. If we reach here, there is no squeeze.
+        # Long entry: Main trend is bullish, but price has dipped to the lower band
+        if is_bullish_trend and current_price <= lower_band:
+            leverage = trade_params.get('default_leverage', 20)
+            trade_pct = trade_params.get('trade_amount_pct_of_balance', 10)
+            balance = portfolio_summary.get('available_balance_usd', 0)
+            trade_amount = balance * (trade_pct / 100)
+            reason = f"Mean Reversion LONG: Main trend is Bullish, but price hit Lower Bollinger Band ({current_price:.2f}). Expecting bounce."
+            return {"command": f"long {leverage}x", "reasoning": reason, "trade_amount_usd": trade_amount}
 
-    # --- RULE 1: EMA Trend Filter ---
-    if filters.get('use_ema_trend_filter'):
+        # Short entry: Main trend is bearish, but price has spiked to the upper band
+        if is_bearish_trend and current_price >= upper_band:
+            leverage = trade_params.get('default_leverage', 20)
+            trade_pct = trade_params.get('trade_amount_pct_of_balance', 10)
+            balance = portfolio_summary.get('available_balance_usd', 0)
+            trade_amount = balance * (trade_pct / 100)
+            reason = f"Mean Reversion SHORT: Main trend is Bearish, but price hit Upper Bollinger Band ({current_price:.2f}). Expecting drop."
+            return {"command": f"short {leverage}x", "reasoning": reason, "trade_amount_usd": trade_amount}
+        
+        return {"command": "hold", "reasoning": f"Ranging market (ADX < {ADX_RANGE_THRESHOLD}), but no mean reversion signal.", "trade_amount_usd": 0}
+
+    # --- STRATEGY 2: TRENDING MARKET - PULLBACK (ADX is high) ---
+    elif adx > ADX_TREND_THRESHOLD:
         is_bullish = current_price > ema_200
         is_bearish = current_price < ema_200
-        if not is_bullish and not is_bearish:
-             return {"command": "hold", "reasoning": "Price is exactly at EMA200, market direction unclear.", "trade_amount_usd": 0}
-    else: # If filter is off, allow both directions
-        is_bullish = True
-        is_bearish = True
 
-    # --- RULE 2: No-Trade Zone Filter ---
-    if filters.get('use_ema_trend_filter') and filters.get('no_trade_zone_pct', 0) > 0:
-        if abs(current_price - ema_200) / ema_200 < filters['no_trade_zone_pct']:
-            return {"command": "hold", "reasoning": f"Price is within the {filters['no_trade_zone_pct']*100}% no-trade zone around EMA200.", "trade_amount_usd": 0}
-
-    # --- RULE 3: Entry Signal (RSI Pullback) ---
-    if filters.get('use_rsi_pullback'):
-        # Bullish case
+        # Bullish Pullback Entry
         if is_bullish:
-            if not (long_cond.get('rsi_entry_min', 30) < rsi < long_cond.get('rsi_entry_max', 50)):
-                return {"command": "hold", "reasoning": f"Bullish trend, but RSI ({rsi:.1f}) is not in the pullback zone ({long_cond.get('rsi_entry_min', 30)}-{long_cond.get('rsi_entry_max', 50)}).", "trade_amount_usd": 0}
-        # Bearish case
+            rsi_in_zone = long_cond.get('rsi_entry_min', 30) < rsi < long_cond.get('rsi_entry_max', 50)
+            volume_confirmed = volume > volume_sma if filters.get('use_volume_confirmation') else True
+            
+            if rsi_in_zone and volume_confirmed:
+                leverage = trade_params.get('default_leverage', 20)
+                trade_pct = trade_params.get('trade_amount_pct_of_balance', 10)
+                balance = portfolio_summary.get('available_balance_usd', 0)
+                trade_amount = balance * (trade_pct / 100)
+                reason = f"Trend Pullback LONG: ADX > {ADX_TREND_THRESHOLD}, RSI in pullback zone ({rsi:.1f}), and Volume confirmed."
+                return {"command": f"long {leverage}x", "reasoning": reason, "trade_amount_usd": trade_amount}
+
+        # Bearish Pullback Entry
         if is_bearish:
-            if not (short_cond.get('rsi_entry_min', 50) < rsi < short_cond.get('rsi_entry_max', 70)):
-                 return {"command": "hold", "reasoning": f"Bearish trend, but RSI ({rsi:.1f}) is not in the pullback zone ({short_cond.get('rsi_entry_min', 50)}-{short_cond.get('rsi_entry_max', 70)}).", "trade_amount_usd": 0}
-    
-    # --- RULE 4: Volume Filter ---
-    if filters.get('use_volume_confirmation'):
-        if volume < volume_sma:
-            return {"command": "hold", "reasoning": f"Entry signal found, but volume ({volume:.2f}) is below SMA ({volume_sma:.2f}). Waiting for confirmation.", "trade_amount_usd": 0}
+            rsi_in_zone = short_cond.get('rsi_entry_min', 50) < rsi < short_cond.get('rsi_entry_max', 70)
+            volume_confirmed = volume > volume_sma if filters.get('use_volume_confirmation') else True
 
-    # --- EXECUTION: If all filters passed, open a position ---
-    leverage = trade_params.get('default_leverage', 20)
-    trade_pct = trade_params.get('trade_amount_pct_of_balance', 10)
-    balance = portfolio_summary.get('available_balance_usd', 0)
-    trade_amount = balance * (trade_pct / 100)
+            if rsi_in_zone and volume_confirmed:
+                leverage = trade_params.get('default_leverage', 20)
+                trade_pct = trade_params.get('trade_amount_pct_of_balance', 10)
+                balance = portfolio_summary.get('available_balance_usd', 0)
+                trade_amount = balance * (trade_pct / 100)
+                reason = f"Trend Pullback SHORT: ADX > {ADX_TREND_THRESHOLD}, RSI in pullback zone ({rsi:.1f}), and Volume confirmed."
+                return {"command": f"short {leverage}x", "reasoning": reason, "trade_amount_usd": trade_amount}
 
-    if is_bullish:
-        reason = f"All conditions met for LONG: Trend confirmed (ADX > 25), EMA bullish, RSI pullback ({rsi:.1f}), and Volume confirmation."
-        return {"command": f"long {leverage}x", "reasoning": reason, "trade_amount_usd": trade_amount}
-    
-    if is_bearish:
-        reason = f"All conditions met for SHORT: Trend confirmed (ADX > 25), EMA bearish, RSI pullback ({rsi:.1f}), and Volume confirmation."
-        return {"command": f"short {leverage}x", "reasoning": reason, "trade_amount_usd": trade_amount}
+        return {"command": "hold", "reasoning": f"Trending market (ADX > {ADX_TREND_THRESHOLD}), but no pullback signal.", "trade_amount_usd": 0}
 
-    # Default case if something goes wrong
-    return {"command": "hold", "reasoning": "Default hold, no conditions were met.", "trade_amount_usd": 0}
+    # --- INDECISIVE ZONE (ADX is between range and trend thresholds) ---
+    else:
+        return {"command": "hold", "reasoning": f"Indecisive market condition (ADX is between {ADX_RANGE_THRESHOLD} and {ADX_TREND_THRESHOLD}).", "trade_amount_usd": 0}
+

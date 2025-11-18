@@ -39,6 +39,8 @@ SENDER_PASSWORD = os.getenv("SENDER_PASSWORD")
 RECEIVER_EMAIL = os.getenv("RECEIVER_EMAIL")
 
 # Trade Strateji Ayarları
+ADX_TREND_THRESHOLD = float(os.getenv("ADX_TREND_THRESHOLD", 20.0)) # Trend stratejisi için minimum ADX
+ADX_RANGE_THRESHOLD = float(os.getenv("ADX_RANGE_THRESHOLD", 20.0)) # Ortalama dönüş stratejisi için maksimum ADX
 TAKE_PROFIT_PCT = float(os.getenv("TAKE_PROFIT_PCT", 80.0)) # Yüzde olarak
 STOP_LOSS_PCT = float(os.getenv("STOP_LOSS_PCT", 25.0))   # Yüzde olarak (Dinamik SL aktifken kullanılmayacak)
 ATR_MULTIPLIER = float(os.getenv("ATR_MULTIPLIER", 2.0))    # Dinamik Stop-Loss için ATR çarpanı
